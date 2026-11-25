@@ -1,0 +1,80 @@
+name: Auto-Deploy to loadingmanager.store
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-loadingmanager-main
+  cancel-in-progress: false
+
+jobs:
+  verify-build:
+    name: Verify TypeScript & Production Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript typecheck
+        run: npm run lint
+
+      - name: ESLint & Firestore rules check
+        run: npx eslint .
+
+      - name: Build production bundle
+        run: npm run build
+
+  deploy-production:
+    name: Deploy to https://loadingmanager.store/
+    needs: verify-build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Trigger Hostinger Node.js Web App Auto-Deploy Webhook
+        env:
+          HOSTINGER_DEPLOY_WEBHOOK_URL: ${{ secrets.HOSTINGER_DEPLOY_WEBHOOK_URL }}
+        run: |
+          if [ -n "$HOSTINGER_DEPLOY_WEBHOOK_URL" ]; then
+            echo "Triggering Hostinger auto-deploy webhook..."
+            curl --fail --silent --show-error -X POST "$HOSTINGER_DEPLOY_WEBHOOK_URL"
+            echo "Hostinger webhook triggered successfully."
+          else
+            echo "HOSTINGER_DEPLOY_WEBHOOK_URL secret not set; skipping webhook trigger."
+          fi
+
+      - name: Deploy to Hostinger VPS via SSH (if configured)
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_PORT: ${{ secrets.VPS_PORT }}
+          VPS_APP_DIR: ${{ secrets.VPS_APP_DIR }}
+        run: |
+          if [ -n "$VPS_HOST" ] && [ -n "$VPS_USER" ] && [ -n "$VPS_SSH_KEY" ]; then
+            KEY_FILE=$(mktemp)
+            trap 'rm -f "$KEY_FILE"' EXIT
+            printf '%s\n' "$VPS_SSH_KEY" > "$KEY_FILE"
+            chmod 600 "$KEY_FILE"
+            PORT="${VPS_PORT:-22}"
+            APP_DIR="${VPS_APP_DIR:-/var/www/gatepass}"
+            echo "Deploying latest main branch to $VPS_HOST:$APP_DIR..."
+            ssh -i "$KEY_FILE" -p "$PORT" -o StrictHostKeyChecking=accept-new "$VPS_USER@$VPS_HOST" \
+              "APP_DIR='$APP_DIR' bash -s" < scripts/vps-deploy.sh
+            echo "VPS deployment finished cleanly."
+          else
+            echo "VPS SSH secrets not set; skipping VPS deployment."
+          fi

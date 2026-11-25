@@ -1,0 +1,6 @@
+{
+  "name": "GatePass & Loading Slip Manager",
+  "description": "Smart Material Loading Ticket, Gate Queue Management, WhatsApp Driver Alerts, and 2-Copy A4 Loading Slip Generation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

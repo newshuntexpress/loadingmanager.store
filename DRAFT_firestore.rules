@@ -1,0 +1,527 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 4.1: Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Pillar 3: Reusable hardened primitives
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isEmailVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isBootstrappedAdmin() {
+      return isEmailVerified() && request.auth.token.email == 'newshuntexpress@gmail.com';
+    }
+
+    function isAdmin() {
+      return isEmailVerified() && (
+        isBootstrappedAdmin() ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isValidRoleName(roleName) {
+      return roleName is string &&
+        roleName.size() <= 40 &&
+        roleName in [
+          'admin',
+          'user',
+          'mmd_manager',
+          'view_only',
+          'forklift_operator',
+          'liquid_store_operator',
+          'ex_factory_operator',
+          'security_guard'
+        ];
+    }
+
+    function isValidUserPublicProfile(data, userId) {
+      return data.keys().hasAll(['uid', 'displayName', 'roleName', 'isActive', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'displayName', 'roleName', 'isActive', 'createdAt', 'updatedAt']) &&
+        isValidId(data.uid) &&
+        data.uid == userId &&
+        data.displayName is string &&
+        data.displayName.size() >= 1 &&
+        data.displayName.size() <= 120 &&
+        isValidRoleName(data.roleName) &&
+        data.isActive is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidUserPrivateInfo(data, userId) {
+      return data.keys().hasAll(['uid', 'email', 'providerId', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'photoURL', 'providerId', 'createdAt', 'updatedAt']) &&
+        isValidId(data.uid) &&
+        data.uid == userId &&
+        data.email is string &&
+        data.email.size() >= 3 &&
+        data.email.size() <= 254 &&
+        (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 512)) &&
+        data.providerId is string &&
+        data.providerId.size() >= 1 &&
+        data.providerId.size() <= 64 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidAuthorizedUserRecord(data, userId) {
+      return data.keys().hasAll(['id', 'username', 'displayName', 'roleName', 'isActive', 'authorizedBy', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'username', 'displayName', 'email', 'roleName', 'isActive', 'authorizedBy', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        data.id == userId &&
+        data.username is string &&
+        data.username.size() >= 3 &&
+        data.username.size() <= 32 &&
+        data.username.matches('^[a-zA-Z0-9._-]+$') &&
+        data.displayName is string &&
+        data.displayName.size() >= 2 &&
+        data.displayName.size() <= 120 &&
+        (!('email' in data) || (data.email is string && data.email.size() <= 254)) &&
+        isValidRoleName(data.roleName) &&
+        data.isActive is bool &&
+        data.authorizedBy is string &&
+        data.authorizedBy.size() >= 1 &&
+        data.authorizedBy.size() <= 120 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidAdminRegistryEntry(data, userId) {
+      return data.keys().hasAll(['uid', 'role', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'role', 'createdAt']) &&
+        isValidId(data.uid) &&
+        data.uid == userId &&
+        data.role is string &&
+        data.role.size() <= 20 &&
+        data.role == 'admin' &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidLoadingSlip(slip) {
+      return slip is map &&
+        slip.keys().hasAll(['delNoteNumber', 'placeName', 'items', 'totalQty', 'totalPallets', 'totalLooseRolls', 'preparedBy', 'checkedBy', 'createdAt']) &&
+        slip.keys().hasOnly([
+          'delNoteNumber',
+          'placeName',
+          'items',
+          'totalQty',
+          'totalPallets',
+          'totalLooseRolls',
+          'preparedBy',
+          'checkedBy',
+          'loadedBy',
+          'storeInchargeUserId',
+          'storeInchargeName',
+          'storeInchargeSignatureDataUrl',
+          'driverSignatureNotes',
+          'createdAt',
+          'isLocked',
+          'loadingCompletedAt',
+          'loadingCompletedTime',
+          'loadingCompletedBy'
+        ]) &&
+        slip.delNoteNumber is string && slip.delNoteNumber.size() <= 64 &&
+        slip.placeName is string && slip.placeName.size() <= 160 &&
+        slip.items is list && slip.items.size() <= 50 && (slip.items.size() == 0 || slip.items[0] is map) &&
+        slip.totalQty is number &&
+        slip.totalPallets is number &&
+        slip.totalLooseRolls is number &&
+        slip.preparedBy is string && slip.preparedBy.size() <= 120 &&
+        slip.checkedBy is string && slip.checkedBy.size() <= 120 &&
+        (!('loadedBy' in slip) || (slip.loadedBy is string && slip.loadedBy.size() <= 120)) &&
+        (!('storeInchargeUserId' in slip) || (slip.storeInchargeUserId is string && slip.storeInchargeUserId.size() <= 128)) &&
+        (!('storeInchargeName' in slip) || (slip.storeInchargeName is string && slip.storeInchargeName.size() <= 120)) &&
+        (!('storeInchargeSignatureDataUrl' in slip) || (slip.storeInchargeSignatureDataUrl is string && slip.storeInchargeSignatureDataUrl.size() <= 300000)) &&
+        (!('driverSignatureNotes' in slip) || (slip.driverSignatureNotes is string && slip.driverSignatureNotes.size() <= 500)) &&
+        slip.createdAt is string && slip.createdAt.size() <= 64 &&
+        (!('isLocked' in slip) || slip.isLocked is bool) &&
+        (!('loadingCompletedAt' in slip) || slip.loadingCompletedAt is number) &&
+        (!('loadingCompletedTime' in slip) || (slip.loadingCompletedTime is string && slip.loadingCompletedTime.size() <= 32)) &&
+        (!('loadingCompletedBy' in slip) || (slip.loadingCompletedBy is string && slip.loadingCompletedBy.size() <= 120));
+    }
+
+    function isValidGateTicket(data, ticketId) {
+      return data.keys().hasAll([
+          'id',
+          'ticketNumber',
+          'sequenceNumber',
+          'date',
+          'timeIn',
+          'gateNumber',
+          'gateSequenceNumber',
+          'truckNumber',
+          'driverName',
+          'status',
+          'ownerUid',
+          'isSharedPlant',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id',
+          'ticketNumber',
+          'sequenceNumber',
+          'date',
+          'timeIn',
+          'timeCalled',
+          'timeLoadingStarted',
+          'timeCompleted',
+          'gateNumber',
+          'gateSequenceNumber',
+          'truckNumber',
+          'driverName',
+          'transporterName',
+          'destinationPlace',
+          'loadingType',
+          'delNoteNumber',
+          'status',
+          'loadingSlip',
+          'remarks',
+          'priority',
+          'version',
+          'ownerUid',
+          'isSharedPlant',
+          'createdBy',
+          'updatedBy',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        data.id == ticketId &&
+        data.ticketNumber is string && data.ticketNumber.size() >= 1 && data.ticketNumber.size() <= 64 &&
+        data.sequenceNumber is number && data.sequenceNumber >= 0 &&
+        data.date is string && data.date.size() == 10 && data.date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$') &&
+        data.timeIn is string && data.timeIn.size() <= 32 &&
+        (!('timeCalled' in data) || (data.timeCalled is string && data.timeCalled.size() <= 32)) &&
+        (!('timeLoadingStarted' in data) || (data.timeLoadingStarted is string && data.timeLoadingStarted.size() <= 32)) &&
+        (!('timeCompleted' in data) || (data.timeCompleted is string && data.timeCompleted.size() <= 32)) &&
+        data.gateNumber is string && data.gateNumber.size() >= 1 && data.gateNumber.size() <= 40 &&
+        data.gateSequenceNumber is number && data.gateSequenceNumber >= 0 &&
+        data.truckNumber is string && data.truckNumber.size() >= 1 && data.truckNumber.size() <= 40 &&
+        data.driverName is string && data.driverName.size() >= 1 && data.driverName.size() <= 120 &&
+        (!('transporterName' in data) || (data.transporterName is string && data.transporterName.size() <= 120)) &&
+        (!('destinationPlace' in data) || (data.destinationPlace is string && data.destinationPlace.size() <= 160)) &&
+        (!('loadingType' in data) || (data.loadingType is string && data.loadingType.size() <= 16 && data.loadingType in ['local', 'export'])) &&
+        (!('delNoteNumber' in data) || (data.delNoteNumber is string && data.delNoteNumber.size() <= 64)) &&
+        data.status is string && data.status.size() <= 24 && data.status in ['waiting', 'called', 'under_loading', 'completed', 'cancelled'] &&
+        (!('loadingSlip' in data) || isValidLoadingSlip(data.loadingSlip)) &&
+        (!('remarks' in data) || (data.remarks is string && data.remarks.size() <= 500)) &&
+        (!('priority' in data) || (data.priority is string && data.priority.size() <= 16 && data.priority in ['normal', 'urgent'])) &&
+        (!('version' in data) || data.version is number) &&
+        isValidId(data.ownerUid) &&
+        data.isSharedPlant is bool &&
+        (!('createdBy' in data) || (data.createdBy is string && data.createdBy.size() <= 120)) &&
+        (!('updatedBy' in data) || (data.updatedBy is string && data.updatedBy.size() <= 120)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidTicketDriverPii(data, ticketId) {
+      return data.keys().hasAll(['ticketId', 'ownerUid', 'driverPhone', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['ticketId', 'ownerUid', 'driverPhone', 'iqamaNumber', 'createdAt', 'updatedAt']) &&
+        isValidId(data.ticketId) &&
+        data.ticketId == ticketId &&
+        isValidId(data.ownerUid) &&
+        data.driverPhone is string && data.driverPhone.size() <= 32 &&
+        (!('iqamaNumber' in data) || (data.iqamaNumber is string && data.iqamaNumber.size() <= 40)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidMaterialRecord(data, materialId) {
+      return data.keys().hasAll(['id', 'materialName', 'packType', 'palletRatio', 'ownerUid', 'isSharedPlant', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'materialName', 'packType', 'palletRatio', 'remarks', 'ownerUid', 'isSharedPlant', 'createdBy', 'updatedBy', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        data.id == materialId &&
+        data.materialName is string && data.materialName.size() >= 1 && data.materialName.size() <= 160 &&
+        data.packType is string && data.packType.size() >= 1 && data.packType.size() <= 40 &&
+        data.palletRatio is number && data.palletRatio > 0 && data.palletRatio <= 10000 &&
+        (!('remarks' in data) || (data.remarks is string && data.remarks.size() <= 300)) &&
+        isValidId(data.ownerUid) &&
+        data.isSharedPlant is bool &&
+        (!('createdBy' in data) || (data.createdBy is string && data.createdBy.size() <= 120)) &&
+        (!('updatedBy' in data) || (data.updatedBy is string && data.updatedBy.size() <= 120)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // Non-PII user profiles: ONLY Admins can create or delete user profiles
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if false;
+
+      allow create: if isAdmin() &&
+        isValidId(userId) &&
+        isValidUserPublicProfile(incoming(), userId) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isEmailVerified() &&
+        isValidId(userId) &&
+        isValidUserPublicProfile(incoming(), userId) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          (
+            isAdmin() &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'roleName', 'isActive', 'updatedAt'])
+          ) ||
+          (
+            isOwner(userId) &&
+            existing().isActive == true &&
+            incoming().roleName == existing().roleName &&
+            incoming().isActive == existing().isActive &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'updatedAt'])
+          )
+        );
+
+      allow delete: if isValidId(userId) && isAdmin();
+
+      // Master Gate + PII isolation subcollection
+      match /private/{docId} {
+        allow get: if isValidId(userId) && isValidId(docId) && docId == 'info' && (isOwner(userId) || isAdmin());
+        allow list: if false;
+
+        allow create: if isEmailVerified() &&
+          isValidId(userId) &&
+          isValidId(docId) &&
+          docId == 'info' &&
+          isAdmin() &&
+          isValidUserPrivateInfo(incoming(), userId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          existsAfter(/databases/$(database)/documents/users/$(userId));
+
+        allow update: if isEmailVerified() &&
+          isValidId(userId) &&
+          isValidId(docId) &&
+          docId == 'info' &&
+          (isAdmin() || (isOwner(userId) && exists(/databases/$(database)/documents/users/$(userId)))) &&
+          isValidUserPrivateInfo(incoming(), userId) &&
+          incoming().uid == existing().uid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['email', 'photoURL', 'providerId', 'updatedAt']) &&
+          exists(/databases/$(database)/documents/users/$(userId));
+
+        allow delete: if isValidId(userId) && isValidId(docId) && isAdmin();
+      }
+    }
+
+    // Admin-managed user authorization whitelist (only Admin can create, edit, or delete)
+    match /authorized_users/{userId} {
+      allow get: if isValidId(userId) && (isAdmin() || (isEmailVerified() && existing().email == request.auth.token.email));
+      allow list: if false;
+
+      allow create: if isAdmin() &&
+        isValidId(userId) &&
+        isValidAuthorizedUserRecord(incoming(), userId) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isAdmin() &&
+        isValidId(userId) &&
+        isValidAuthorizedUserRecord(incoming(), userId) &&
+        incoming().id == existing().id &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'username',
+          'displayName',
+          'email',
+          'roleName',
+          'isActive',
+          'authorizedBy',
+          'updatedAt'
+        ]);
+
+      allow delete: if isValidId(userId) && isAdmin();
+    }
+
+    // Trusted Admin Registry
+    match /admins/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if false;
+      allow create: if isEmailVerified() &&
+        isValidId(userId) &&
+        isValidAdminRegistryEntry(incoming(), userId) &&
+        incoming().createdAt == request.time &&
+        (isAdmin() || (isOwner(userId) && isBootstrappedAdmin()));
+      allow update: if false;
+      allow delete: if isValidId(userId) && isAdmin();
+    }
+
+    // Gate Queue Tickets & Loading Slips (non-PII operational state; driver PII isolated under /private/driver)
+    match /gate_tickets/{ticketId} {
+      allow get: if isValidId(ticketId) &&
+        isEmailVerified() &&
+        (isAdmin() || existing().ownerUid == request.auth.uid || existing().isSharedPlant == true);
+
+      allow list: if isEmailVerified() &&
+        (resource.data.ownerUid == request.auth.uid || resource.data.isSharedPlant == true);
+
+      allow create: if isEmailVerified() &&
+        isValidId(ticketId) &&
+        isValidGateTicket(incoming(), ticketId) &&
+        incoming().ownerUid == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isEmailVerified() &&
+        isValidId(ticketId) &&
+        isValidGateTicket(incoming(), ticketId) &&
+        incoming().id == existing().id &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          isAdmin() ||
+          (
+            (existing().ownerUid == request.auth.uid || existing().isSharedPlant == true) &&
+            existing().status != 'completed' &&
+            existing().status != 'cancelled' &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'timeCalled',
+              'timeLoadingStarted',
+              'timeCompleted',
+              'gateNumber',
+              'gateSequenceNumber',
+              'truckNumber',
+              'driverName',
+              'transporterName',
+              'destinationPlace',
+              'loadingType',
+              'delNoteNumber',
+              'status',
+              'loadingSlip',
+              'remarks',
+              'priority',
+              'version',
+              'updatedBy',
+              'updatedAt',
+              'isSharedPlant'
+            ])
+          )
+        );
+
+      allow delete: if isValidId(ticketId) &&
+        isEmailVerified() &&
+        (isAdmin() || existing().ownerUid == request.auth.uid);
+
+      // Isolated Driver Phone & Iqama PII
+      match /private/{docId} {
+        allow get: if isValidId(ticketId) &&
+          isValidId(docId) &&
+          docId == 'driver' &&
+          isEmailVerified() &&
+          (isAdmin() || existing().ownerUid == request.auth.uid);
+
+        allow list: if false;
+
+        allow create: if isEmailVerified() &&
+          isValidId(ticketId) &&
+          isValidId(docId) &&
+          docId == 'driver' &&
+          isValidTicketDriverPii(incoming(), ticketId) &&
+          incoming().ownerUid == request.auth.uid &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          existsAfter(/databases/$(database)/documents/gate_tickets/$(ticketId));
+
+        allow update: if isEmailVerified() &&
+          isValidId(ticketId) &&
+          isValidId(docId) &&
+          docId == 'driver' &&
+          isValidTicketDriverPii(incoming(), ticketId) &&
+          incoming().ticketId == existing().ticketId &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          (isAdmin() || existing().ownerUid == request.auth.uid) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['driverPhone', 'iqamaNumber', 'updatedAt']) &&
+          exists(/databases/$(database)/documents/gate_tickets/$(ticketId));
+
+        allow delete: if isValidId(ticketId) &&
+          isValidId(docId) &&
+          docId == 'driver' &&
+          isEmailVerified() &&
+          (isAdmin() || existing().ownerUid == request.auth.uid);
+      }
+    }
+
+    // Material Master Records
+    match /materials/{materialId} {
+      allow get: if isValidId(materialId) &&
+        isEmailVerified() &&
+        (isAdmin() || existing().ownerUid == request.auth.uid || existing().isSharedPlant == true);
+
+      allow list: if isEmailVerified() &&
+        (resource.data.ownerUid == request.auth.uid || resource.data.isSharedPlant == true);
+
+      allow create: if isEmailVerified() &&
+        isValidId(materialId) &&
+        isValidMaterialRecord(incoming(), materialId) &&
+        incoming().ownerUid == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isEmailVerified() &&
+        isValidId(materialId) &&
+        isValidMaterialRecord(incoming(), materialId) &&
+        incoming().id == existing().id &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          isAdmin() ||
+          (
+            (existing().ownerUid == request.auth.uid || existing().isSharedPlant == true) &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'materialName',
+              'packType',
+              'palletRatio',
+              'remarks',
+              'updatedBy',
+              'updatedAt',
+              'isSharedPlant'
+            ])
+          )
+        );
+
+      allow delete: if isValidId(materialId) &&
+        isEmailVerified() &&
+        (isAdmin() || existing().ownerUid == request.auth.uid);
+    }
+
+    // Connection check document (server check only; no public writes)
+    match /test/{docId} {
+      allow get: if isValidId(docId) && docId == 'connection' && isSignedIn();
+      allow list, write: if false;
+    }
+  }
+}

@@ -1,0 +1,915 @@
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { TicketRecord, CompanySettings, TruckStatus } from '../types';
+import { formatSaudiPhoneNumber } from '../utils/whatsapp';
+import { resolveLoadingType } from '../utils/loadingType';
+import { formatDisplayDate, getTodayDateString } from '../services/storage';
+import {
+  ShieldCheck,
+  DoorOpen,
+  Truck,
+  Play,
+  Megaphone,
+  Clock,
+  CheckCircle2,
+  Search,
+  RefreshCw,
+  Maximize2,
+  Minimize2,
+  MapPin,
+  Globe,
+  Calendar,
+  Phone,
+  FileText,
+  X,
+  Lock,
+  ArrowUpDown,
+  AlertTriangle,
+} from 'lucide-react';
+
+interface SecurityGuardViewProps {
+  tickets: TicketRecord[];
+  settings: CompanySettings;
+  selectedDate: string;
+  onDateChange?: (nextDate: string) => void;
+  onRefresh: () => void;
+  isRestrictedGuard?: boolean;
+}
+
+type StatusScopeFilter = 'ACTIVE' | 'ALL' | 'under_loading' | 'called' | 'waiting' | 'completed';
+
+const STATUS_PRIORITY: Record<TruckStatus, number> = {
+  under_loading: 0,
+  called: 1,
+  waiting: 2,
+  completed: 3,
+  cancelled: 4,
+};
+
+function getQueueBucket(status: TruckStatus): number {
+  if (status === 'under_loading' || status === 'called' || status === 'waiting') return 0;
+  if (status === 'completed') return 1;
+  return 2;
+}
+
+export function parseArrivalTimeSeconds(timeStr?: string): number | null {
+  if (!timeStr) return null;
+  const trimmed = timeStr.trim();
+  if (!trimmed) return null;
+  const match = trimmed.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?$/i);
+  if (!match) return null;
+
+  let hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  const seconds = match[3] ? Number(match[3]) : 0;
+  const meridiem = match[4]?.toUpperCase();
+
+  if (minutes < 0 || minutes >= 60 || seconds < 0 || seconds >= 60) return null;
+
+  if (meridiem) {
+    if (hours < 1 || hours > 12) return null;
+    if (meridiem === 'AM') {
+      hours = hours === 12 ? 0 : hours;
+    } else if (meridiem === 'PM') {
+      hours = hours === 12 ? 12 : hours + 12;
+    }
+  } else if (hours < 0 || hours > 23) {
+    return null;
+  }
+
+  return hours * 3600 + minutes * 60 + seconds;
+}
+
+export function compareGateTrucks(a: TicketRecord, b: TicketRecord): number {
+  // 1. Keep active queue entries ahead of completed / cancelled history
+  const bucketDiff = getQueueBucket(a.status) - getQueueBucket(b.status);
+  if (bucketDiff !== 0) return bucketDiff;
+
+  // 2. Gate Priority: Urgent trucks always come at the top of each gate's queue
+  const gatePrioA = a.priority === 'urgent' ? 0 : 1;
+  const gatePrioB = b.priority === 'urgent' ? 0 : 1;
+  if (gatePrioA !== gatePrioB) return gatePrioA - gatePrioB;
+
+  // 3. Arrival Time: Earliest Arrival Time (timeIn) first, fallback to createdAt
+  const arrivalA = parseArrivalTimeSeconds(a.timeIn);
+  const arrivalB = parseArrivalTimeSeconds(b.timeIn);
+  if (arrivalA !== null && arrivalB !== null) {
+    if (arrivalA !== arrivalB) return arrivalA - arrivalB;
+  } else if (arrivalA !== null || arrivalB !== null) {
+    const createdDiff = (a.createdAt || 0) - (b.createdAt || 0);
+    if (createdDiff !== 0) return createdDiff;
+    return arrivalA !== null ? -1 : 1;
+  }
+
+  const createdDiff = (a.createdAt || 0) - (b.createdAt || 0);
+  if (createdDiff !== 0) return createdDiff;
+
+  // 4. Operational status & sequence tie-breakers
+  const statusDiff = (STATUS_PRIORITY[a.status] ?? 9) - (STATUS_PRIORITY[b.status] ?? 9);
+  if (statusDiff !== 0) return statusDiff;
+  const gSeqDiff = (a.gateSequenceNumber || 9999) - (b.gateSequenceNumber || 9999);
+  if (gSeqDiff !== 0) return gSeqDiff;
+  return (a.sequenceNumber || 9999) - (b.sequenceNumber || 9999);
+}
+
+function getStatusBadgeInfo(status: TruckStatus): {
+  label: string;
+  badgeClass: string;
+  rowAccentClass: string;
+  dotClass: string;
+} {
+  switch (status) {
+    case 'under_loading':
+      return {
+        label: 'UNDER LOADING',
+        badgeClass: 'bg-[#FFF3E8] text-[#B45309] border-[#F5B076]',
+        rowAccentClass: 'border-l-4 border-l-[#E9730C] bg-[#FFFDF9]',
+        dotClass: 'bg-[#E9730C] animate-pulse',
+      };
+    case 'called':
+      return {
+        label: 'CALLED TO GATE',
+        badgeClass: 'bg-[#EBF5FF] text-[#085CAF] border-[#93C5FD]',
+        rowAccentClass: 'border-l-4 border-l-[#0A6ED1] bg-[#F8FBFF]',
+        dotClass: 'bg-[#0A6ED1] animate-pulse',
+      };
+    case 'waiting':
+      return {
+        label: 'WAITING IN QUEUE',
+        badgeClass: 'bg-[#FEF9E7] text-[#854D0E] border-[#F3CC60]',
+        rowAccentClass: 'border-l-4 border-l-[#F0AB00] bg-white',
+        dotClass: 'bg-[#F0AB00]',
+      };
+    case 'completed':
+      return {
+        label: 'COMPLETED',
+        badgeClass: 'bg-[#EBFBF2] text-[#0D6B34] border-[#8AD8AA]',
+        rowAccentClass: 'border-l-4 border-l-[#107E3E] bg-[#F7FDF9]',
+        dotClass: 'bg-[#107E3E]',
+      };
+    default:
+      return {
+        label: 'CANCELLED',
+        badgeClass: 'bg-[#FFF0F0] text-[#BB0000] border-[#F4B8B8]',
+        rowAccentClass: 'border-l-4 border-l-[#BB0000] bg-[#FFF9F9] opacity-75',
+        dotClass: 'bg-[#BB0000]',
+      };
+  }
+}
+
+export const SecurityGuardView: React.FC<SecurityGuardViewProps> = ({
+  tickets,
+  settings,
+  selectedDate,
+  onDateChange,
+  onRefresh,
+  isRestrictedGuard = false,
+}) => {
+  const [selectedGate, setSelectedGate] = useState<string>('ALL');
+  const [statusFilter, setStatusFilter] = useState<StatusScopeFilter>('ACTIVE');
+  const [loadingTypeFilter, setLoadingTypeFilter] = useState<'ALL' | 'local' | 'export'>('ALL');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [isFullscreenBooth, setIsFullscreenBooth] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [liveClock, setLiveClock] = useState<string>(() =>
+    new Date().toLocaleTimeString('en-GB', { hour12: false })
+  );
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const tick = setInterval(() => {
+      setLiveClock(new Date().toLocaleTimeString('en-GB', { hour12: false }));
+    }, 1000);
+    return () => clearInterval(tick);
+  }, []);
+
+  useEffect(() => {
+    const handleFsChange = () => {
+      if (!document.fullscreenElement && isFullscreenBooth) {
+        // Keep booth mode controllable by button even if native fullscreen exited via ESC
+      }
+    };
+    document.addEventListener('fullscreenchange', handleFsChange);
+    return () => document.removeEventListener('fullscreenchange', handleFsChange);
+  }, [isFullscreenBooth]);
+
+  const toggleBoothFullscreen = async () => {
+    const next = !isFullscreenBooth;
+    setIsFullscreenBooth(next);
+    try {
+      if (next && containerRef.current && document.fullscreenEnabled && !document.fullscreenElement) {
+        await containerRef.current.requestFullscreen();
+      } else if (!next && document.fullscreenElement) {
+        await document.exitFullscreen();
+      }
+    } catch {
+      // Fallback CSS fixed full-screen mode remains active cleanly
+    }
+  };
+
+  const handleManualRefresh = () => {
+    setIsRefreshing(true);
+    onRefresh();
+    setTimeout(() => setIsRefreshing(false), 500);
+  };
+
+  // All tickets for the active dispatch date (excluding cancelled from allotment totals)
+  const dayTickets = useMemo(() => {
+    return tickets
+      .filter((t) => t.date === selectedDate && t.status !== 'cancelled')
+      .sort((a, b) => (a.sequenceNumber || 0) - (b.sequenceNumber || 0));
+  }, [tickets, selectedDate]);
+
+  // All gate names: configured gates first, followed by any gate appearing on day tickets
+  const allGates = useMemo(() => {
+    const seen = new Set<string>();
+    const ordered: string[] = [];
+    for (const g of settings.gates || []) {
+      const clean = g.trim();
+      if (clean && !seen.has(clean.toUpperCase())) {
+        seen.add(clean.toUpperCase());
+        ordered.push(clean);
+      }
+    }
+    for (const t of dayTickets) {
+      const clean = (t.gateNumber || '').trim();
+      if (clean && !seen.has(clean.toUpperCase())) {
+        seen.add(clean.toUpperCase());
+        ordered.push(clean);
+      }
+    }
+    return ordered;
+  }, [settings.gates, dayTickets]);
+
+  // Overall KPI metrics for the day
+  const kpi = useMemo(() => {
+    let underLoading = 0;
+    let called = 0;
+    let waiting = 0;
+    let completed = 0;
+    for (const t of dayTickets) {
+      if (t.status === 'under_loading') underLoading++;
+      else if (t.status === 'called') called++;
+      else if (t.status === 'waiting') waiting++;
+      else if (t.status === 'completed') completed++;
+    }
+    const activeAllotted = underLoading + called + waiting;
+    return {
+      activeAllotted,
+      underLoading,
+      called,
+      waiting,
+      completed,
+      totalAllottedToday: activeAllotted + completed,
+    };
+  }, [dayTickets]);
+
+  // Gate-by-gate allotment stats + filtered display rows
+  const gateSummaries = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+
+    return allGates.map((gateName) => {
+      const gateKey = gateName.trim().toUpperCase();
+      const gateTickets = dayTickets.filter((t) => (t.gateNumber || '').trim().toUpperCase() === gateKey);
+
+      const underLoadingCount = gateTickets.filter((t) => t.status === 'under_loading').length;
+      const calledCount = gateTickets.filter((t) => t.status === 'called').length;
+      const waitingCount = gateTickets.filter((t) => t.status === 'waiting').length;
+      const completedCount = gateTickets.filter((t) => t.status === 'completed').length;
+      const urgentActiveCount = gateTickets.filter(
+        (t) =>
+          t.priority === 'urgent' &&
+          (t.status === 'under_loading' || t.status === 'called' || t.status === 'waiting')
+      ).length;
+      const activeAllottedCount = underLoadingCount + calledCount + waitingCount;
+      const totalDayCount = gateTickets.length;
+
+      const filteredRows = gateTickets
+        .filter((t) => {
+          if (statusFilter === 'ACTIVE') {
+            if (t.status !== 'under_loading' && t.status !== 'called' && t.status !== 'waiting') {
+              return false;
+            }
+          } else if (statusFilter !== 'ALL' && t.status !== statusFilter) {
+            return false;
+          }
+
+          if (loadingTypeFilter !== 'ALL' && resolveLoadingType(t) !== loadingTypeFilter) {
+            return false;
+          }
+
+          if (q) {
+            const matchTruck = (t.truckNumber || '').toLowerCase().includes(q);
+            const matchDriver = (t.driverName || '').toLowerCase().includes(q);
+            const matchPhone = (t.driverPhone || '').toLowerCase().includes(q);
+            const matchTicket = (t.ticketNumber || '').toLowerCase().includes(q);
+            const matchDelNote = (t.delNoteNumber || t.loadingSlip?.delNoteNumber || '').toLowerCase().includes(q);
+            const matchDest = (t.destinationPlace || '').toLowerCase().includes(q);
+            if (!matchTruck && !matchDriver && !matchPhone && !matchTicket && !matchDelNote && !matchDest) {
+              return false;
+            }
+          }
+          return true;
+        })
+        .sort(compareGateTrucks);
+
+      return {
+        gateName,
+        underLoadingCount,
+        calledCount,
+        waitingCount,
+        completedCount,
+        urgentActiveCount,
+        activeAllottedCount,
+        totalDayCount,
+        filteredRows,
+      };
+    });
+  }, [allGates, dayTickets, statusFilter, loadingTypeFilter, searchQuery]);
+
+  const visibleGates = useMemo(() => {
+    if (selectedGate === 'ALL') return gateSummaries;
+    return gateSummaries.filter((g) => g.gateName.toUpperCase() === selectedGate.toUpperCase());
+  }, [gateSummaries, selectedGate]);
+
+  return (
+    <div
+      ref={containerRef}
+      className={
+        isFullscreenBooth
+          ? 'fixed inset-0 z-50 bg-[#EEF3F8] overflow-y-auto p-4 sm:p-6 space-y-4'
+          : 'space-y-4'
+      }
+    >
+      {/* Top Security Guard Command Banner */}
+      <div className="surface-3d rounded-2xl overflow-hidden border border-[#C6D4E3]">
+        <div className="bg-gradient-to-r from-[#1E2E3E] via-[#263748] to-[#1A4369] text-white px-4 sm:px-5 py-3.5 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-[#F0AB00] to-[#C88800] text-[#1C2833] flex items-center justify-center shrink-0 shadow-[0_2px_0_#785000]">
+              <ShieldCheck className="w-6 h-6" />
+            </div>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-base sm:text-lg font-black tracking-wide text-white">
+                  Security Guard — Gate Truck Allotment Monitor
+                </h2>
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-extrabold bg-[#107E3E]/30 text-[#86EFAC] border border-[#24A159]/60">
+                  <span className="w-1.5 h-1.5 rounded-full bg-[#4ADE80] animate-pulse" />
+                  <span>LIVE (10s)</span>
+                </span>
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-white/10 text-[#E2E8F0] border border-white/20">
+                  <Lock className="w-3 h-3 text-[#F0AB00]" />
+                  <span>Read-Only Checkpost</span>
+                </span>
+              </div>
+              <p className="text-xs text-[#CBD8E6] mt-0.5">
+                Live gate-wise count &amp; truck list allotted for loading • {settings.companyName}
+              </p>
+            </div>
+          </div>
+
+          {/* Right Controls: Live Clock, Date Switcher (for restricted view), Refresh, Fullscreen */}
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <div className="flex items-center gap-1.5 bg-[#152230] border border-[#3E5873] rounded-lg px-2.5 h-9 text-xs font-mono font-black text-[#F0AB00]">
+              <Clock className="w-3.5 h-3.5 text-[#68AEFF]" />
+              <span>{liveClock}</span>
+            </div>
+
+            {(isRestrictedGuard || isFullscreenBooth) && onDateChange ? (
+              <div className="relative inline-flex items-center h-9 bg-[#2B3E50] hover:bg-[#3A526A] rounded-lg border border-[#4F6B88] px-2.5 gap-1.5 transition">
+                <Calendar className="w-3.5 h-3.5 text-[#F0AB00] pointer-events-none shrink-0" />
+                <span className="text-xs font-black text-white font-mono pointer-events-none">
+                  {formatDisplayDate(selectedDate)}
+                </span>
+                <input
+                  type="date"
+                  value={selectedDate}
+                  onChange={(e) => {
+                    if (e.target.value) onDateChange(e.target.value);
+                  }}
+                  aria-label="Select Guard Monitor Date"
+                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                />
+                {selectedDate !== getTodayDateString() && (
+                  <button
+                    type="button"
+                    onClick={() => onDateChange(getTodayDateString())}
+                    className="relative z-10 px-1.5 py-0.5 text-[10px] bg-[#0A6ED1] hover:bg-[#085CAF] text-white rounded font-bold cursor-pointer"
+                  >
+                    Today
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="inline-flex items-center h-9 bg-[#1B2A38] border border-[#45607A] rounded-lg px-2.5 gap-1.5 text-xs font-bold text-[#E2E8F0]">
+                <Calendar className="w-3.5 h-3.5 text-[#F0AB00]" />
+                <span>{formatDisplayDate(selectedDate)}</span>
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={handleManualRefresh}
+              className="app-btn-sm !h-9 bg-[#2B3E50] hover:bg-[#3A526A] text-white border border-[#4F6B88]"
+              title="Refresh Gate Allotment Now"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 text-[#F0AB00] ${isRefreshing ? 'animate-spin' : ''}`} />
+              <span>Refresh</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={toggleBoothFullscreen}
+              className={`app-btn-sm !h-9 border font-bold ${
+                isFullscreenBooth
+                  ? 'bg-[#BB0000] hover:bg-[#9E0000] text-white border-[#E04F4F]'
+                  : 'bg-[#0A6ED1] hover:bg-[#085CAF] text-white border-[#3B93EE]'
+              }`}
+              title={isFullscreenBooth ? 'Exit Full-Screen Gate Display' : 'Open Full-Screen Gate Booth Display'}
+            >
+              {isFullscreenBooth ? (
+                <>
+                  <Minimize2 className="w-3.5 h-3.5" />
+                  <span>Exit Fullscreen</span>
+                </>
+              ) : (
+                <>
+                  <Maximize2 className="w-3.5 h-3.5" />
+                  <span>Full-Screen Booth</span>
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+
+        {/* Summary KPI Strip */}
+        <div className="p-3 sm:p-4 bg-[#F7FAFD] border-b border-[#D8E2EC] grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5 sm:gap-3">
+          <div className="surface-3d bg-white rounded-xl p-3 border border-[#B8DCFF]">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-extrabold uppercase tracking-wide text-[#085CAF]">
+                Active Allotted
+              </span>
+              <Truck className="w-4 h-4 text-[#0A6ED1]" />
+            </div>
+            <p className="text-2xl sm:text-3xl font-black text-[#085CAF] tabular-nums mt-1">
+              {kpi.activeAllotted}
+            </p>
+            <p className="text-[10.5px] font-semibold text-[#5B738B]">
+              Loading + Called + Waiting
+            </p>
+          </div>
+
+          <div className="surface-3d bg-white rounded-xl p-3 border border-[#F5B076]">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-extrabold uppercase tracking-wide text-[#B45309]">
+                Under Loading
+              </span>
+              <Play className="w-4 h-4 text-[#E9730C]" />
+            </div>
+            <p className="text-2xl sm:text-3xl font-black text-[#B45309] tabular-nums mt-1">
+              {kpi.underLoading}
+            </p>
+            <p className="text-[10.5px] font-semibold text-[#5B738B]">
+              Currently Inside Gates
+            </p>
+          </div>
+
+          <div className="surface-3d bg-white rounded-xl p-3 border border-[#93C5FD]">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-extrabold uppercase tracking-wide text-[#0A6ED1]">
+                Called to Gate
+              </span>
+              <Megaphone className="w-4 h-4 text-[#0A6ED1]" />
+            </div>
+            <p className="text-2xl sm:text-3xl font-black text-[#0A6ED1] tabular-nums mt-1">
+              {kpi.called}
+            </p>
+            <p className="text-[10.5px] font-semibold text-[#5B738B]">
+              Entry Clearance Given
+            </p>
+          </div>
+
+          <div className="surface-3d bg-white rounded-xl p-3 border border-[#F3CC60]">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-extrabold uppercase tracking-wide text-[#854D0E]">
+                Waiting Queue
+              </span>
+              <Clock className="w-4 h-4 text-[#D97706]" />
+            </div>
+            <p className="text-2xl sm:text-3xl font-black text-[#854D0E] tabular-nums mt-1">
+              {kpi.waiting}
+            </p>
+            <p className="text-[10.5px] font-semibold text-[#5B738B]">
+              Waiting Outside Gate
+            </p>
+          </div>
+
+          <div className="surface-3d bg-white rounded-xl p-3 border border-[#8AD8AA] col-span-2 sm:col-span-1">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-extrabold uppercase tracking-wide text-[#107E3E]">
+                Completed Today
+              </span>
+              <CheckCircle2 className="w-4 h-4 text-[#107E3E]" />
+            </div>
+            <p className="text-2xl sm:text-3xl font-black text-[#107E3E] tabular-nums mt-1">
+              {kpi.completed}
+            </p>
+            <p className="text-[10.5px] font-semibold text-[#5B738B]">
+              Total Day Allotted: {kpi.totalAllottedToday}
+            </p>
+          </div>
+        </div>
+
+        {/* Gate-by-Gate Allotment Quick Glance Bar */}
+        <div className="p-3 sm:p-4 bg-white border-b border-[#D8E2EC] space-y-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs font-black uppercase tracking-wider text-[#354A5F] flex items-center gap-1.5">
+              <DoorOpen className="w-4 h-4 text-[#0A6ED1]" />
+              <span>Gate-Wise Allotment Count (Click a Gate to Focus)</span>
+            </p>
+            {selectedGate !== 'ALL' && (
+              <button
+                type="button"
+                onClick={() => setSelectedGate('ALL')}
+                className="text-xs font-bold text-[#0A6ED1] hover:underline cursor-pointer"
+              >
+                Show All Gates ({allGates.length})
+              </button>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2.5">
+            {gateSummaries.map((g) => {
+              const isSelected = selectedGate.toUpperCase() === g.gateName.toUpperCase();
+              const hasActive = g.activeAllottedCount > 0;
+              return (
+                <button
+                  key={g.gateName}
+                  type="button"
+                  onClick={() => setSelectedGate(isSelected ? 'ALL' : g.gateName)}
+                  className={`text-left rounded-xl p-3 border transition cursor-pointer ${
+                    isSelected
+                      ? 'bg-[#0A6ED1] text-white border-[#004C97] shadow-md ring-2 ring-[#68AEFF]'
+                      : hasActive
+                      ? 'bg-[#F4F8FC] hover:bg-[#EBF3FB] text-[#1C2833] border-[#B8D0E8]'
+                      : 'bg-neutral-50 hover:bg-neutral-100 text-[#4A6075] border-neutral-200'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="text-xs font-black uppercase tracking-wide truncate">
+                      {g.gateName}
+                    </span>
+                    <span
+                      className={`px-2 py-0.5 rounded-md text-xs font-black tabular-nums ${
+                        isSelected
+                          ? 'bg-white text-[#0A6ED1]'
+                          : hasActive
+                          ? 'bg-[#0A6ED1] text-white'
+                          : 'bg-neutral-200 text-neutral-600'
+                      }`}
+                    >
+                      {g.activeAllottedCount}
+                    </span>
+                  </div>
+                  <p
+                    className={`text-[11px] font-bold mt-1 ${
+                      isSelected ? 'text-[#DCEEFF]' : 'text-[#354A5F]'
+                    }`}
+                  >
+                    {g.activeAllottedCount === 1 ? '1 Truck Allotted' : `${g.activeAllottedCount} Trucks Allotted`}
+                  </p>
+                  <div
+                    className={`flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] font-bold mt-1.5 ${
+                      isSelected ? 'text-white/90' : 'text-[#5B738B]'
+                    }`}
+                  >
+                    <span>Load: {g.underLoadingCount}</span>
+                    <span>•</span>
+                    <span>Call: {g.calledCount}</span>
+                    <span>•</span>
+                    <span>Wait: {g.waitingCount}</span>
+                    <span>•</span>
+                    <span>Done: {g.completedCount}</span>
+                    {g.urgentActiveCount > 0 && (
+                      <span
+                        className={`ml-auto px-1.5 py-0.5 rounded text-[9px] font-black uppercase ${
+                          isSelected
+                            ? 'bg-[#BB0000] text-white'
+                            : 'bg-[#FEE2E2] text-[#991B1B] border border-[#FCA5A5]'
+                        }`}
+                      >
+                        Urgent: {g.urgentActiveCount}
+                      </span>
+                    )}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Filter & Search Toolbar */}
+        <div className="p-3 sm:px-4 bg-[#F0F4F8] flex flex-wrap items-center gap-2">
+          <div className="relative flex-1 min-w-[200px] sm:max-w-xs">
+            <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-[#5B738B] pointer-events-none" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search Truck No., Del Note, Driver, Place..."
+              className="inset-3d w-full h-9 pl-8.5 pr-8 text-xs rounded-lg border border-[#C2D0DF] bg-white text-[#1C2833] font-medium focus:outline-none focus:ring-2 focus:ring-[#0A6ED1]"
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery('')}
+                className="absolute right-2 top-2 text-[#5B738B] hover:text-[#1C2833] cursor-pointer"
+                title="Clear search"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+
+          <select
+            value={selectedGate}
+            onChange={(e) => setSelectedGate(e.target.value)}
+            aria-label="Filter by Gate"
+            className="inset-3d h-9 px-2.5 rounded-lg border border-[#C2D0DF] bg-white text-xs font-bold text-[#1C2833] cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#0A6ED1]"
+          >
+            <option value="ALL">All Gates ({allGates.length})</option>
+            {allGates.map((g) => (
+              <option key={g} value={g}>
+                {g}
+              </option>
+            ))}
+          </select>
+
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value as StatusScopeFilter)}
+            aria-label="Filter by Allotment Status"
+            className="inset-3d h-9 px-2.5 rounded-lg border border-[#C2D0DF] bg-white text-xs font-bold text-[#1C2833] cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#0A6ED1]"
+          >
+            <option value="ACTIVE">Active Allotted Only (Loading + Called + Waiting)</option>
+            <option value="ALL">All Statuses (Incl. Completed)</option>
+            <option value="under_loading">Under Loading Only</option>
+            <option value="called">Called to Gate Only</option>
+            <option value="waiting">Waiting in Queue Only</option>
+            <option value="completed">Completed Only</option>
+          </select>
+
+          <select
+            value={loadingTypeFilter}
+            onChange={(e) => setLoadingTypeFilter(e.target.value as 'ALL' | 'local' | 'export')}
+            aria-label="Filter by Loading Type"
+            className="inset-3d h-9 px-2.5 rounded-lg border border-[#C2D0DF] bg-white text-xs font-bold text-[#1C2833] cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#0A6ED1]"
+          >
+            <option value="ALL">All Types (Local &amp; Export)</option>
+            <option value="local">Local Only</option>
+            <option value="export">Export Only</option>
+          </select>
+
+          <div
+            className="ml-auto inline-flex items-center gap-1.5 h-9 px-3 rounded-lg bg-[#E6EFF8] border border-[#B8D0E8] text-[11px] font-extrabold text-[#1E3A5F]"
+            title="Each gate queue automatically places Urgent Gate Priority trucks first, then orders by earliest Arrival Time"
+          >
+            <ArrowUpDown className="w-3.5 h-3.5 text-[#0A6ED1] shrink-0" />
+            <span>Auto-Sort: Gate Priority (Urgent First) → Arrival Time</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Gate-by-Gate Allotment Detail Cards */}
+      <div
+        className={`grid gap-4 ${
+          selectedGate !== 'ALL'
+            ? 'grid-cols-1'
+            : 'grid-cols-1 lg:grid-cols-2'
+        }`}
+      >
+        {visibleGates.map((gate) => {
+          const isGateActive = gate.activeAllottedCount > 0;
+          return (
+            <section
+              key={gate.gateName}
+              className="surface-3d rounded-2xl overflow-hidden border border-[#C6D4E3] bg-white flex flex-col"
+            >
+              {/* Gate Card Header */}
+              <div className="bg-gradient-to-r from-[#263748] to-[#354A5F] text-white px-4 py-3 flex flex-wrap items-center justify-between gap-2 border-b border-[#1A2836]">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 rounded-lg bg-[#0A6ED1] text-white flex items-center justify-center font-black shadow-sm border border-[#68AEFF]/50">
+                    <DoorOpen className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-base font-black tracking-wide text-white">
+                        {gate.gateName}
+                      </h3>
+                      {gate.underLoadingCount > 0 ? (
+                        <span className="px-2 py-0.5 rounded text-[10px] font-black bg-[#E9730C] text-white">
+                          LOADING ACTIVE
+                        </span>
+                      ) : gate.calledCount > 0 ? (
+                        <span className="px-2 py-0.5 rounded text-[10px] font-black bg-[#0A6ED1] text-white border border-[#68AEFF]">
+                          TRUCK CALLED
+                        </span>
+                      ) : gate.waitingCount > 0 ? (
+                        <span className="px-2 py-0.5 rounded text-[10px] font-black bg-[#F0AB00] text-[#1C2833]">
+                          QUEUE WAITING
+                        </span>
+                      ) : (
+                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-white/15 text-[#CBD8E6]">
+                          GATE CLEAR
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-[#CBD8E6]">
+                      Loading: <strong className="text-white">{gate.underLoadingCount}</strong> • Called:{' '}
+                      <strong className="text-white">{gate.calledCount}</strong> • Waiting:{' '}
+                      <strong className="text-white">{gate.waitingCount}</strong> • Done:{' '}
+                      <strong className="text-white">{gate.completedCount}</strong>
+                    </p>
+                  </div>
+                </div>
+
+                {/* Big Allotted Counter Badge */}
+                <div className="flex items-center gap-2">
+                  <div
+                    className={`px-3 py-1.5 rounded-xl border text-center min-w-[106px] ${
+                      isGateActive
+                        ? 'bg-[#F0AB00] text-[#1C2833] border-[#FFD154]'
+                        : 'bg-[#1F3040] text-[#CBD8E6] border-[#4F6B88]'
+                    }`}
+                  >
+                    <p className="text-lg font-black leading-none tabular-nums">
+                      {gate.activeAllottedCount}
+                    </p>
+                    <p className="text-[10px] font-extrabold uppercase tracking-wider mt-0.5">
+                      Allotted Active
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Truck List for this Gate */}
+              <div className="p-3 space-y-2.5 flex-1 bg-[#F9FBFD]">
+                {gate.filteredRows.length === 0 ? (
+                  <div className="py-8 px-4 text-center rounded-xl border border-dashed border-[#CBD5E1] bg-white">
+                    <Truck className="w-7 h-7 text-[#94A3B8] mx-auto mb-1.5" />
+                    <p className="text-xs font-bold text-[#475569]">
+                      {gate.totalDayCount === 0
+                        ? `No trucks allotted to ${gate.gateName} on ${formatDisplayDate(selectedDate)}.`
+                        : `No trucks match the active filter for ${gate.gateName}.`}
+                    </p>
+                    {gate.completedCount > 0 && statusFilter === 'ACTIVE' && (
+                      <p className="text-[11px] text-[#107E3E] font-semibold mt-1">
+                        {gate.completedCount} truck{gate.completedCount === 1 ? '' : 's'} already completed loading today.
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  gate.filteredRows.map((ticket, idx) => {
+                    const statusUi = getStatusBadgeInfo(ticket.status);
+                    const loadingType = resolveLoadingType(ticket);
+                    const delNote = ticket.delNoteNumber || ticket.loadingSlip?.delNoteNumber || '';
+                    const queueNum = ticket.gateSequenceNumber || idx + 1;
+                    const isUrgentActive =
+                      ticket.priority === 'urgent' &&
+                      ticket.status !== 'completed' &&
+                      ticket.status !== 'cancelled';
+
+                    return (
+                      <div
+                        key={ticket.id}
+                        className={`rounded-xl border p-3 shadow-2xs transition ${statusUi.rowAccentClass} ${
+                          isUrgentActive
+                            ? 'border-[#FCA5A5] ring-1 ring-[#FCA5A5] !bg-[#FFF7F7]'
+                            : 'border-[#D4DFEA]'
+                        }`}
+                      >
+                        <div className="flex flex-wrap items-start justify-between gap-2">
+                          {/* Left: Queue # + Truck Number + Tags */}
+                          <div className="flex flex-wrap items-center gap-2 min-w-0">
+                            <span
+                              className="inline-flex items-center justify-center min-w-[32px] h-7 px-2 rounded-lg bg-[#263748] text-white text-xs font-black tabular-nums"
+                              title="Gate Queue Position"
+                            >
+                              #{queueNum}
+                            </span>
+
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#1C2833] text-white font-mono text-sm font-black tracking-wide shadow-2xs">
+                              <Truck className="w-3.5 h-3.5 text-[#F0AB00] shrink-0" />
+                              <span>{ticket.truckNumber}</span>
+                            </span>
+
+                            {ticket.priority === 'urgent' ? (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-black bg-[#BB0000] text-white uppercase shadow-2xs">
+                                <AlertTriangle className="w-3 h-3" />
+                                <span>URGENT PRIORITY</span>
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-[#F1F5F9] text-[#475569] border border-[#CBD5E1] uppercase">
+                                NORMAL PRIORITY
+                              </span>
+                            )}
+
+                            <span
+                              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-extrabold border uppercase ${
+                                loadingType === 'export'
+                                  ? 'bg-[#EEF2FF] text-[#3730A3] border-[#C7D2FE]'
+                                  : 'bg-[#F1F5F9] text-[#334155] border-[#CBD5E1]'
+                              }`}
+                            >
+                              {loadingType === 'export' && <Globe className="w-2.5 h-2.5" />}
+                              <span>{loadingType === 'export' ? 'EXPORT' : 'LOCAL'}</span>
+                            </span>
+                          </div>
+
+                          {/* Right: Status Badge */}
+                          <span
+                            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-black border shrink-0 ${statusUi.badgeClass}`}
+                          >
+                            <span className={`w-2 h-2 rounded-full ${statusUi.dotClass}`} />
+                            <span>{statusUi.label}</span>
+                          </span>
+                        </div>
+
+                        {/* Middle Details Grid */}
+                        <div className="mt-2.5 grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-xs text-[#334155]">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <FileText className="w-3.5 h-3.5 text-[#0A6ED1] shrink-0" />
+                            <span className="truncate">
+                              <strong>Del Note:</strong>{' '}
+                              <span className="font-mono font-bold text-[#1C2833]">
+                                {delNote || '—'}
+                              </span>{' '}
+                              <span className="text-[11px] text-[#64748B]">({ticket.ticketNumber})</span>
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <MapPin className="w-3.5 h-3.5 text-[#E9730C] shrink-0" />
+                            <span className="truncate">
+                              <strong>Place:</strong>{' '}
+                              <span className="font-bold text-[#1C2833]">
+                                {ticket.destinationPlace || ticket.loadingSlip?.placeName || '—'}
+                              </span>
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <span className="font-bold text-[#475569]">Driver:</span>
+                            <span className="font-bold text-[#1C2833] truncate">
+                              {ticket.driverName || '—'}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <Phone className="w-3.5 h-3.5 text-[#107E3E] shrink-0" />
+                            <span className="font-mono font-bold text-[#1C2833]">
+                              {ticket.driverPhone ? formatSaudiPhoneNumber(ticket.driverPhone) : '—'}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Bottom Timestamps */}
+                        <div className="mt-2 pt-2 border-t border-[#E2E8F0] flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-[#475569] font-medium">
+                          <span>
+                            <strong>Arrival Time:</strong>{' '}
+                            <span className="font-mono font-bold text-[#1C2833]">{ticket.timeIn || '—'}</span>
+                          </span>
+                          {ticket.timeCalled && (
+                            <span>
+                              <strong>Called:</strong>{' '}
+                              <span className="font-mono text-[#085CAF] font-bold">{ticket.timeCalled}</span>
+                            </span>
+                          )}
+                          {ticket.timeLoadingStarted && (
+                            <span>
+                              <strong>Loading Started:</strong>{' '}
+                              <span className="font-mono text-[#B45309] font-bold">
+                                {ticket.timeLoadingStarted}
+                              </span>
+                            </span>
+                          )}
+                          {ticket.timeCompleted && (
+                            <span>
+                              <strong>Completed:</strong>{' '}
+                              <span className="font-mono text-[#107E3E] font-bold">
+                                {ticket.timeCompleted}
+                              </span>
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </section>
+          );
+        })}
+      </div>
+    </div>
+  );
+};

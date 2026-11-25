@@ -1,0 +1,1553 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PetroVault Tank Inventory</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #f8fafc;
+      --surface: #ffffff;
+      --surface-alt: #f1f5f9;
+      --border: #e2e8f0;
+      --text: #0f172a;
+      --muted: #64748b;
+      --sidebar: #0f172a;
+      --sidebar-text: #cbd5e1;
+      --blue: #0284c7;
+      --blue-soft: #e0f2fe;
+      --green: #16a34a;
+      --green-soft: #dcfce7;
+      --red: #dc2626;
+      --red-soft: #fee2e2;
+      --grey: #94a3b8;
+    }
+    html.dark {
+      --bg: #020617;
+      --surface: #0f172a;
+      --surface-alt: #1e293b;
+      --border: #1e293b;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+      --blue: #38bdf8;
+      --blue-soft: rgba(56, 189, 248, 0.14);
+      --green-soft: rgba(22, 163, 74, 0.15);
+      --red-soft: rgba(220, 38, 38, 0.15);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: 'DM Sans', system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    h1, h2, h3, h4, .display { font-family: 'Plus Jakarta Sans', system-ui, sans-serif; margin: 0; }
+    .mono { font-family: 'IBM Plex Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+    .app-shell { display: flex; min-height: 100vh; }
+
+    /* Sidebar */
+    .sidebar {
+      width: 256px;
+      background: var(--sidebar);
+      color: #f8fafc;
+      border-right: 1px solid #1e293b;
+      display: flex;
+      flex-direction: column;
+      position: fixed;
+      inset: 0 auto 0 0;
+      z-index: 30;
+    }
+    .sidebar-brand { padding: 20px; border-bottom: 1px solid #1e293b; }
+    .sidebar-brand .title { font-size: 18px; font-weight: 800; color: #fff; }
+    .sidebar-brand .sub { font-size: 12px; color: #94a3b8; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .nav-list { flex: 1; padding: 14px 12px; display: flex; flex-direction: column; gap: 4px; overflow-y: auto; }
+    .nav-btn {
+      width: 100%;
+      border: 0;
+      background: transparent;
+      color: var(--sidebar-text);
+      padding: 10px 14px;
+      border-radius: 8px;
+      text-align: left;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      transition: background 0.15s, color 0.15s;
+    }
+    .nav-btn:hover { background: #1e293b; color: #fff; }
+    .nav-btn.active { background: #0284c7; color: #fff; font-weight: 600; }
+    .sidebar-footer { padding: 14px 20px; border-top: 1px solid #1e293b; font-size: 12px; color: #94a3b8; }
+    .sidebar-footer strong { color: #f8fafc; display: block; }
+
+    /* Main Content */
+    .main-wrap { flex: 1; margin-left: 256px; display: flex; flex-direction: column; min-width: 0; }
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    .topbar-left { display: flex; align-items: center; gap: 10px; font-size: 14px; }
+    .topbar-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .mobile-menu-btn { display: none; }
+    .content { padding: 24px; max-width: 1560px; width: 100%; margin: 0 auto; display: flex; flex-direction: column; gap: 22px; }
+
+    /* Buttons & Inputs */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 8px 14px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: opacity 0.15s, background 0.15s;
+    }
+    .btn:hover { opacity: 0.92; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-green { background: #16a34a; border-color: #16a34a; color: #fff; }
+    .btn-red { background: #dc2626; border-color: #dc2626; color: #fff; }
+    .btn-blue { background: #0284c7; border-color: #0284c7; color: #fff; }
+    .btn-dark { background: #0f172a; border-color: #0f172a; color: #fff; }
+    html.dark .btn-dark { background: #0284c7; border-color: #0284c7; }
+
+    input, select, textarea {
+      width: 100%;
+      padding: 8px 11px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      font-size: 13px;
+      font-family: inherit;
+    }
+    input:focus, select:focus, textarea:focus { outline: 2px solid #0284c7; outline-offset: -1px; }
+    label { display: block; font-size: 12px; font-weight: 600; margin-bottom: 5px; color: var(--text); }
+
+    /* Cards & Grids */
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 18px; }
+    .kpi-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 14px; }
+    .mat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+    .tank-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+    .tank-grid.single { grid-template-columns: 1fr; }
+    .tank-card-body { display: grid; grid-template-columns: 250px 1fr; gap: 20px; align-items: center; margin-top: 14px; }
+    .tank-svg-box {
+      background: var(--surface-alt);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px 8px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    .tank-metrics-top { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .metric-box { border: 1px solid var(--border); background: var(--surface-alt); border-radius: 8px; padding: 10px 12px; }
+    .metric-table { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-top: 12px; }
+    .metric-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-bottom: 1px solid var(--border); }
+    .metric-row:last-child { border-bottom: 0; }
+    .metric-cell { padding: 8px 10px; font-size: 12px; display: flex; justify-content: space-between; gap: 6px; border-right: 1px solid var(--border); }
+    .metric-cell:last-child { border-right: 0; }
+
+    /* Segmented Tabs */
+    .seg-bar { display: inline-flex; flex-wrap: wrap; gap: 4px; padding: 4px; background: var(--surface-alt); border: 1px solid var(--border); border-radius: 9px; }
+    .seg-btn {
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .seg-btn.active { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
+
+    /* Tables */
+    .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; text-align: left; }
+    th { background: var(--surface-alt); color: var(--muted); font-weight: 600; padding: 10px 12px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+    td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+    tr:last-child td { border-bottom: 0; }
+    tr:hover td { background: rgba(148, 163, 184, 0.06); }
+    .right { text-align: right; }
+
+    /* Text Colors */
+    .c-blue { color: var(--blue); }
+    .c-green { color: var(--green); }
+    .c-red { color: var(--red); }
+    .c-muted { color: var(--muted); }
+
+    /* Modals & Toast */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 60;
+      background: rgba(2, 6, 23, 0.65);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      overflow-y: auto;
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      width: 100%;
+      max-width: 640px;
+      box-shadow: 0 20px 50px rgba(0,0,0,0.25);
+      overflow: hidden;
+    }
+    .modal-head { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+    .modal-body { padding: 20px; display: flex; flex-direction: column; gap: 14px; }
+    .modal-foot { padding: 14px 20px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 10px; }
+    .form-grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .form-grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+
+    .toast {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      z-index: 80;
+      padding: 12px 16px;
+      border-radius: 10px;
+      font-size: 13px;
+      font-weight: 500;
+      color: #fff;
+      display: none;
+      max-width: 420px;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.25);
+    }
+    .toast.show { display: block; }
+    .toast.success { background: #064e3b; border: 1px solid #059669; }
+    .toast.error { background: #7f1d1d; border: 1px solid #dc2626; }
+    .error-banner { padding: 10px 12px; border-radius: 8px; background: var(--red-soft); color: var(--red); font-size: 12px; font-weight: 600; }
+
+    @media (max-width: 1280px) {
+      .kpi-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .tank-grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 960px) {
+      .sidebar { transform: translateX(-100%); transition: transform 0.2s; }
+      .sidebar.open { transform: translateX(0); }
+      .main-wrap { margin-left: 0; }
+      .mobile-menu-btn { display: inline-flex; }
+      .tank-card-body { grid-template-columns: 1fr; }
+      .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .form-grid-2, .form-grid-3, .tank-metrics-top, .metric-row { grid-template-columns: 1fr; }
+    }
+    @media print {
+      .sidebar, .topbar, .no-print { display: none !important; }
+      .main-wrap { margin-left: 0 !important; }
+      body { background: #fff !important; color: #0f172a !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Sidebar -->
+    <aside id="sidebar" class="sidebar">
+      <div class="sidebar-brand">
+        <div class="title">PetroVault</div>
+        <div id="brand-facility" class="sub">Bulk Liquid Terminal — Sector 4</div>
+      </div>
+      <nav class="nav-list" aria-label="Primary Navigation">
+        <button class="nav-btn active" data-nav="dashboard">Dashboard</button>
+        <button class="nav-btn" data-nav="tanks">Tank Management</button>
+        <button class="nav-btn" data-nav="inward">Material Inward</button>
+        <button class="nav-btn" data-nav="outward">Material Outward</button>
+        <button class="nav-btn" data-nav="history">Transaction History</button>
+        <button class="nav-btn" data-nav="reports">Stock Reports</button>
+        <button class="nav-btn" data-nav="settings">Settings</button>
+      </nav>
+      <div class="sidebar-footer">
+        <strong id="sidebar-operator">Plant Operations Manager</strong>
+        <span id="sidebar-role">Terminal Supervisor</span>
+      </div>
+    </aside>
+
+    <!-- Main Workspace -->
+    <div class="main-wrap">
+      <header class="topbar">
+        <div class="topbar-left">
+          <button type="button" class="btn mobile-menu-btn" onclick="toggleMobileSidebar()">Menu</button>
+          <span class="c-muted">PetroVault /</span>
+          <strong id="page-title">Dashboard</strong>
+        </div>
+        <div class="topbar-actions">
+          <button type="button" class="btn btn-green" onclick="openTxModal('INWARD')">+ Inward Entry</button>
+          <button type="button" class="btn btn-red" onclick="openTxModal('OUTWARD')">- Outward Entry</button>
+        </div>
+      </header>
+
+      <main id="app-content" class="content"></main>
+    </div>
+  </div>
+
+  <!-- Transaction Modal -->
+  <div id="tx-modal-backdrop" class="modal-backdrop">
+    <div class="modal">
+      <div class="modal-head">
+        <div>
+          <h3 id="tx-modal-title">Add Material Inward Entry</h3>
+          <div class="c-muted" style="font-size:12px;">Enter quantity in KG · Automatically converted to MT (1 MT = 1,000 KG)</div>
+        </div>
+        <button type="button" class="btn" onclick="closeTxModal()">Close</button>
+      </div>
+      <form id="tx-form" onsubmit="handleTxFormSubmit(event)">
+        <div class="modal-body">
+          <div id="tx-error" class="error-banner" style="display:none;"></div>
+          <div id="tx-step-edit">
+            <div class="form-grid-2">
+              <div>
+                <label>Transaction Date & Time *</label>
+                <input id="tx-date" type="datetime-local" required />
+              </div>
+              <div>
+                <label>Tank Selection *</label>
+                <select id="tx-tank" onchange="updateTxPreview()" required></select>
+              </div>
+            </div>
+            <div id="tx-tank-info" class="card" style="padding:10px 12px;margin-top:12px;background:var(--surface-alt);font-size:12px;"></div>
+            <div class="form-grid-2" style="margin-top:12px;">
+              <div>
+                <label>Material Name *</label>
+                <select id="tx-material" onchange="updateTxPreview()" required></select>
+              </div>
+              <div>
+                <label style="display:flex;justify-content:space-between;">
+                  <span>Quantity (KG) *</span>
+                  <span id="tx-mt-preview" class="mono c-blue">= 0 MT</span>
+                </label>
+                <input id="tx-qty" type="number" step="any" min="0.01" placeholder="e.g. 100000" oninput="updateTxPreview()" required />
+              </div>
+            </div>
+            <div class="form-grid-3" style="margin-top:12px;">
+              <div>
+                <label>Reference Number *</label>
+                <input id="tx-ref" type="text" placeholder="PO / DO No." required />
+              </div>
+              <div>
+                <label id="tx-party-label">Supplier Name *</label>
+                <input id="tx-party" type="text" placeholder="Vendor / Customer" required />
+              </div>
+              <div>
+                <label>Vehicle Number</label>
+                <input id="tx-vehicle" type="text" placeholder="MH-12-TK-4401" style="text-transform:uppercase;" />
+              </div>
+            </div>
+            <div style="margin-top:12px;">
+              <label>Remarks</label>
+              <textarea id="tx-remarks" rows="2" placeholder="Optional weighbridge notes..."></textarea>
+            </div>
+          </div>
+          <div id="tx-step-confirm" style="display:none;">
+            <div class="card" style="background:var(--surface-alt);font-size:13px;">
+              <strong>Confirm Transaction</strong>
+              <p class="c-muted" style="margin:4px 0 0;font-size:12px;">Please review details and projected tank stock before saving.</p>
+              <div id="tx-confirm-summary" style="margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:8px;"></div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <button type="button" id="tx-back-btn" class="btn" style="display:none;" onclick="setTxConfirmStep(false)">Back to Edit</button>
+          <button type="button" class="btn" onclick="closeTxModal()">Cancel</button>
+          <button type="submit" id="tx-submit-btn" class="btn btn-green">Review & Confirm</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Tank Modal -->
+  <div id="tank-modal-backdrop" class="modal-backdrop">
+    <div class="modal" style="max-width:520px;">
+      <div class="modal-head">
+        <div>
+          <h3 id="tank-modal-title">Add New Tank</h3>
+          <div class="c-muted" style="font-size:12px;">Configure tank capacity in KG (converted to MT) and depth in meters</div>
+        </div>
+        <button type="button" class="btn" onclick="closeTankModal()">Close</button>
+      </div>
+      <form onsubmit="handleTankFormSubmit(event)">
+        <div class="modal-body">
+          <div id="tank-error" class="error-banner" style="display:none;"></div>
+          <div>
+            <label>Tank Name *</label>
+            <input id="tank-name" type="text" placeholder="e.g. Tank 15" required />
+          </div>
+          <div class="form-grid-2">
+            <div>
+              <label style="display:flex;justify-content:space-between;">
+                <span>Total Capacity (KG) *</span>
+                <span id="tank-mt-preview" class="mono c-blue">= 2,000 MT</span>
+              </label>
+              <input id="tank-cap" type="number" step="any" min="1" value="2000000" oninput="document.getElementById('tank-mt-preview').textContent = '= ' + fmtMT((Number(this.value)||0)/1000) + ' MT'" required />
+            </div>
+            <div>
+              <label>Tank Depth (Meters) *</label>
+              <input id="tank-depth" type="number" step="0.1" min="0.1" value="7" required />
+            </div>
+          </div>
+          <div>
+            <label>Location / Bay</label>
+            <input id="tank-loc" type="text" value="Main Storage Bay A" />
+          </div>
+          <div>
+            <label>Technical Notes</label>
+            <textarea id="tank-notes" rows="2" placeholder="Optional tank calibration remarks..."></textarea>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <button type="button" class="btn" onclick="closeTankModal()">Cancel</button>
+          <button type="submit" class="btn btn-dark">Save Tank</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Tank Detail Modal -->
+  <div id="tank-detail-backdrop" class="modal-backdrop">
+    <div class="modal" style="max-width:580px;">
+      <div class="modal-head">
+        <div>
+          <h3 id="detail-title">Tank Details</h3>
+          <div id="detail-sub" class="c-muted" style="font-size:12px;"></div>
+        </div>
+        <div style="display:flex;gap:8px;">
+          <button type="button" class="btn" onclick="window.print()">Print / Save PDF</button>
+          <button type="button" class="btn" onclick="closeDetailModal()">Close</button>
+        </div>
+      </div>
+      <div id="detail-body" class="modal-body"></div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script>
+    const STORAGE_KEY = 'petrovault_tank_inventory_v1';
+
+    function nowLocalInput() {
+      const d = new Date();
+      const p = n => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+    }
+
+    function todayPrefix() {
+      return nowLocalInput().slice(0, 10);
+    }
+
+    function createSeedState() {
+      const now = new Date().toISOString();
+      const tanks = [];
+      for (let i = 1; i <= 14; i++) {
+        tanks.push({
+          id: i,
+          name: `Tank ${String(i).padStart(2, '0')}`,
+          total_capacity_kg: 2000000,
+          depth_meters: 7,
+          location: i <= 7 ? 'Main Storage Bay A' : 'Main Storage Bay B',
+          notes: 'Vertical cylindrical bulk storage tank (2,000 MT / 7m)'
+        });
+      }
+      return {
+        nextTankId: 15,
+        nextTxId: 2,
+        nextMatId: 3,
+        nextAuditId: 2,
+        settings: {
+          full_name: 'Plant Operations Manager',
+          email: 'operations@petrovault.local',
+          role: 'Terminal Supervisor',
+          facility_name: 'Bulk Liquid Terminal — Sector 4',
+          theme: 'light'
+        },
+        materials: [
+          { id: 1, name: 'ASPHALT 60/70', code: 'ASP-6070', description: 'Penetration grade bitumen 60/70 for paving and industrial applications' },
+          { id: 2, name: 'USED OIL', code: 'USE-OIL', description: 'Recovered industrial lubricating and furnace fuel oil' }
+        ],
+        tanks,
+        transactions: [
+          {
+            id: 1,
+            tx_code: `INW-${todayPrefix().replaceAll('-', '')}-0001`,
+            type: 'INWARD',
+            tx_date: nowLocalInput(),
+            tank_id: 1,
+            material_name: 'ASPHALT 60/70',
+            quantity_kg: 500000,
+            quantity_mt: 500,
+            reference_number: 'OPN-2026-001',
+            party_name: 'National Bitumen Refinery',
+            vehicle_number: 'MH-12-TK-4401',
+            remarks: 'Opening baseline inventory stock',
+            created_at: now
+          }
+        ],
+        auditLogs: [
+          {
+            id: 1,
+            action: 'CREATE',
+            entity_type: 'TRANSACTION',
+            summary: 'Initialized Tank 01 to Tank 14 (2,000 MT / 7m each) with 500,000 KG ASPHALT 60/70 in Tank 01',
+            performed_by: 'System Seed',
+            created_at: now
+          }
+        ]
+      };
+    }
+
+    function loadState() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (raw) return JSON.parse(raw);
+      } catch (e) {}
+      const seed = createSeedState();
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(seed));
+      return seed;
+    }
+
+    let state = loadState();
+    let activeNav = 'dashboard';
+    let dashMaterialFilter = 'ALL';
+    let dashViewMode = 'by-material';
+    let historySubTab = 'ledger';
+    let editingMatId = null;
+    let regFilters = { search: '', tankId: 'ALL', material: 'ALL', type: 'ALL', start: '', end: '' };
+    let repFilters = { tankId: 'ALL', material: 'ALL', start: '', end: '' };
+
+    let txModalState = { mode: 'create', type: 'INWARD', editId: null, confirmStep: false };
+    let tankModalEditId = null;
+
+    function saveState() {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    }
+
+    function esc(str) {
+      return String(str ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;');
+    }
+
+    function fmtKG(n) {
+      return new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(n || 0);
+    }
+
+    function fmtMT(n) {
+      return new Intl.NumberFormat('en-US', { maximumFractionDigits: 3 }).format(n || 0);
+    }
+
+    function fmtM(n) {
+      return new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n || 0);
+    }
+
+    function fmtPct(n) {
+      return new Intl.NumberFormat('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 2 }).format(n || 0) + '%';
+    }
+
+    function fmtDate(dStr) {
+      if (!dStr) return 'No transactions yet';
+      const d = new Date(dStr);
+      if (isNaN(d.getTime())) return dStr;
+      return d.toLocaleString('en-US', { year: 'numeric', month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+    }
+
+    function showToast(type, msg) {
+      const el = document.getElementById('toast');
+      el.className = `toast show ${type}`;
+      el.textContent = msg;
+      clearTimeout(window._toastTimer);
+      window._toastTimer = setTimeout(() => { el.className = 'toast'; }, 4000);
+    }
+
+    function addAudit(action, entityType, summary) {
+      state.auditLogs.unshift({
+        id: state.nextAuditId++,
+        action,
+        entity_type: entityType,
+        summary,
+        performed_by: state.settings.full_name,
+        created_at: new Date().toISOString()
+      });
+    }
+
+    function computeTank(tank, txList = state.transactions) {
+      const txs = txList.filter(t => t.tank_id === tank.id);
+      let inwardKg = 0;
+      let outwardKg = 0;
+      let lastTx = null;
+      const matMap = {};
+
+      for (const tx of txs) {
+        if (!matMap[tx.material_name]) matMap[tx.material_name] = { material_name: tx.material_name, inward_kg: 0, outward_kg: 0 };
+        if (tx.type === 'INWARD') {
+          inwardKg += tx.quantity_kg;
+          matMap[tx.material_name].inward_kg += tx.quantity_kg;
+        } else {
+          outwardKg += tx.quantity_kg;
+          matMap[tx.material_name].outward_kg += tx.quantity_kg;
+        }
+        if (!lastTx || tx.tx_date > lastTx) lastTx = tx.tx_date;
+      }
+
+      const currentKg = inwardKg - outwardKg;
+      const capKg = tank.total_capacity_kg;
+      const emptyKg = Math.max(0, capKg - currentKg);
+      const filledPct = capKg > 0 ? Math.min(100, Math.max(0, (currentKg / capKg) * 100)) : 0;
+      const emptyPct = Math.max(0, 100 - filledPct);
+      const filledM = tank.depth_meters * (filledPct / 100);
+      const emptyM = Math.max(0, tank.depth_meters - filledM);
+      const materials = Object.values(matMap).map(m => ({
+        ...m,
+        balance_kg: m.inward_kg - m.outward_kg,
+        balance_mt: (m.inward_kg - m.outward_kg) / 1000
+      }));
+      const activeProds = materials.filter(m => m.balance_kg > 0.0001).map(m => m.material_name);
+
+      return {
+        ...tank,
+        total_capacity_mt: capKg / 1000,
+        total_inward_kg: inwardKg,
+        total_outward_kg: outwardKg,
+        current_stock_kg: currentKg,
+        current_stock_mt: currentKg / 1000,
+        empty_capacity_kg: emptyKg,
+        empty_capacity_mt: emptyKg / 1000,
+        filled_percentage: filledPct,
+        empty_percentage: emptyPct,
+        filled_meters: filledM,
+        empty_meters: emptyM,
+        last_transaction_at: lastTx,
+        materials,
+        productLabel: activeProds.length ? activeProds.join(', ') : 'Empty'
+      };
+    }
+
+    function validateAllTanks(txList) {
+      for (const tank of state.tanks) {
+        const st = computeTank(tank, txList);
+        if (st.current_stock_kg < -0.0001) {
+          return `Operation rejected: ${tank.name} stock would drop below 0 (${fmtKG(st.current_stock_kg)} KG).`;
+        }
+        if (st.current_stock_kg > tank.total_capacity_kg + 0.0001) {
+          return `Operation rejected: ${tank.name} stock (${fmtKG(st.current_stock_kg)} KG) exceeds capacity (${fmtKG(tank.total_capacity_kg)} KG).`;
+        }
+        for (const m of st.materials) {
+          if (m.balance_kg < -0.0001) {
+            return `Operation rejected: ${m.material_name} balance in ${tank.name} would become negative (${fmtKG(m.balance_kg)} KG).`;
+          }
+        }
+      }
+      return null;
+    }
+
+    function renderTankSVG(tank) {
+      const uid = `t${tank.id}`;
+      const cylX = 56, cylW = 148, cylTopY = 86, cylBottomY = 318, cylHeight = 232;
+      const rx = 74, ry = 18, cx = cylX + rx;
+      const fillPct = tank.filled_percentage;
+      const liqH = (cylHeight * fillPct) / 100;
+      const liqTopY = cylBottomY - liqH;
+      const pointerY = Math.min(cylBottomY - 6, Math.max(cylTopY, liqTopY));
+      const ticks = [1, 0.75, 0.5, 0.25, 0].map(r => {
+        const y = cylBottomY - cylHeight * r;
+        const m = (tank.depth_meters * r).toFixed(r === 0 || r === 1 ? 0 : 1);
+        return `<line x1="${cylX - 19}" y1="${y}" x2="${cylX - 14}" y2="${y}" stroke="#64748B" stroke-width="1.2" />
+                <text x="${cylX - 22}" y="${y + 3}" text-anchor="end" font-size="9" fill="#64748B" font-family="IBM Plex Mono, monospace">${m}m</text>`;
+      }).join('');
+
+      return `
+        <svg viewBox="0 0 280 368" style="width:100%;max-width:240px;height:auto;">
+          <defs>
+            <linearGradient id="shell-${uid}" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0%" stop-color="#94A3B8" /><stop offset="25%" stop-color="#F8FAFC" /><stop offset="75%" stop-color="#CBD5E1" /><stop offset="100%" stop-color="#64748B" />
+            </linearGradient>
+            <linearGradient id="empty-${uid}" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0%" stop-color="#CBD5E1" /><stop offset="40%" stop-color="#E2E8F0" /><stop offset="100%" stop-color="#94A3B8" />
+            </linearGradient>
+            <linearGradient id="liq-${uid}" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0%" stop-color="#0369A1" /><stop offset="45%" stop-color="#38BDF8" /><stop offset="100%" stop-color="#075985" />
+            </linearGradient>
+            <clipPath id="clip-${uid}">
+              <path d="M ${cylX} ${cylTopY} A ${rx} ${ry} 0 0 1 ${cylX + cylW} ${cylTopY} L ${cylX + cylW} ${cylBottomY} A ${rx} ${ry} 0 0 1 ${cylX} ${cylBottomY} Z" />
+            </clipPath>
+          </defs>
+          <rect x="${cylX - 8}" y="${cylBottomY + 4}" width="${cylW + 16}" height="14" rx="3" fill="#475569" />
+          <rect x="${cylX - 12}" y="${cylBottomY + 14}" width="${cylW + 24}" height="6" rx="2" fill="#334155" />
+          <path d="M 16 ${cylTopY - 16} L 70 ${cylTopY - 16} L 70 ${cylTopY - 8}" fill="none" stroke="#16A34A" stroke-width="6" stroke-linecap="round" />
+          <rect x="28" y="${cylTopY - 23}" width="12" height="14" rx="2" fill="#15803D" />
+          <text x="16" y="${cylTopY - 29}" font-size="9" font-weight="600" fill="#16A34A" font-family="IBM Plex Mono, monospace">INWARD</text>
+          <path d="M ${cylX + cylW - 4} ${cylBottomY - 12} L 244 ${cylBottomY - 12}" fill="none" stroke="#DC2626" stroke-width="6" stroke-linecap="round" />
+          <circle cx="${cylX + cylW + 16}" cy="${cylBottomY - 12}" r="7" fill="#DC2626" stroke="#991B1B" stroke-width="2" />
+          <text x="210" y="${cylBottomY - 22}" font-size="9" font-weight="600" fill="#DC2626" font-family="IBM Plex Mono, monospace">OUTWARD</text>
+          <path d="M ${cylX - 5} ${cylTopY} L ${cylX - 5} ${cylBottomY} A ${rx + 5} ${ry + 2} 0 0 0 ${cylX + cylW + 5} ${cylBottomY} L ${cylX + cylW + 5} ${cylTopY} Z" fill="url(#shell-${uid})" stroke="#64748B" stroke-width="1.2" />
+          <g clip-path="url(#clip-${uid})">
+            <rect x="${cylX}" y="${cylTopY - ry}" width="${cylW}" height="${cylHeight + ry * 2}" fill="url(#empty-${uid})" />
+            ${fillPct > 0 ? `<rect x="${cylX}" y="${liqTopY}" width="${cylW}" height="${liqH + ry + 4}" fill="url(#liq-${uid})" />
+            <ellipse cx="${cx}" cy="${liqTopY}" rx="${rx}" ry="13" fill="#7DD3FC" stroke="#BAE6FD" stroke-width="1.2" />` : ''}
+            <rect x="${cylX + 14}" y="${cylTopY - ry}" width="14" height="${cylHeight + ry * 2}" fill="#FFF" fill-opacity="0.2" />
+          </g>
+          <rect x="${cx - 72}" y="6" width="144" height="32" rx="5" fill="#0F172A" fill-opacity="0.92" stroke="#475569" stroke-width="1" />
+          <text x="${cx}" y="19" text-anchor="middle" font-size="9.5" font-weight="700" fill="#F8FAFC" font-family="Plus Jakarta Sans, sans-serif">${esc(tank.name)}</text>
+          <text x="${cx}" y="31" text-anchor="middle" font-size="8.5" font-weight="600" fill="#38BDF8" font-family="IBM Plex Mono, monospace">${esc(tank.productLabel.slice(0, 22))}</text>
+          <path d="M ${cylX - 5} ${cylTopY} A ${rx + 5} ${ry + 16} 0 0 1 ${cylX + cylW + 5} ${cylTopY} A ${rx + 5} ${ry} 0 0 1 ${cylX - 5} ${cylTopY} Z" fill="#CBD5E1" stroke="#64748B" stroke-width="1.2" />
+          <ellipse cx="${cx}" cy="${cylTopY - 12}" rx="18" ry="6" fill="#64748B" />
+          <rect x="${cx - 4}" y="${cylTopY - 22}" width="8" height="10" rx="1" fill="#475569" />
+          <line x1="${cylX - 14}" y1="${cylTopY}" x2="${cylX - 14}" y2="${cylBottomY}" stroke="#64748B" stroke-width="1.2" />
+          ${ticks}
+          <g transform="translate(0, ${pointerY})">
+            <polygon points="${cylX + cylW + 7},0 ${cylX + cylW + 15},-5 ${cylX + cylW + 15},5" fill="#0284C7" />
+            <rect x="${cylX + cylW + 16}" y="-12" width="52" height="24" rx="4" fill="#0F172A" />
+            <text x="${cylX + cylW + 42}" y="3" text-anchor="middle" font-size="10" font-weight="700" fill="#38BDF8" font-family="IBM Plex Mono, monospace">${fillPct.toFixed(1)}%</text>
+          </g>
+        </svg>`;
+    }
+
+    function renderTankCard(tank) {
+      return `
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;border-bottom:1px solid var(--border);padding-bottom:12px;flex-wrap:wrap;">
+            <div>
+              <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;">
+                <h3 style="font-size:17px;">${esc(tank.name)}</h3>
+                <span class="c-blue" style="font-weight:700;font-size:14px;">— ${esc(tank.productLabel)}</span>
+                <span class="c-muted" style="font-size:12px;">· ${esc(tank.location)}</span>
+              </div>
+              <div class="mono c-muted" style="font-size:12px;margin-top:3px;">
+                ${fmtMT(tank.total_capacity_mt)} MT Capacity · ${fmtM(tank.depth_meters)} m Depth · Last Activity: ${fmtDate(tank.last_transaction_at)}
+              </div>
+            </div>
+            <div style="display:flex;gap:6px;">
+              <button class="btn btn-green" onclick="openTxModal('INWARD', ${tank.id})">+ Inward</button>
+              <button class="btn btn-red" onclick="openTxModal('OUTWARD', ${tank.id})">- Outward</button>
+              <button class="btn" onclick="openDetailModal(${tank.id})">Details</button>
+            </div>
+          </div>
+          <div class="tank-card-body">
+            <div class="tank-svg-box">
+              ${renderTankSVG(tank)}
+              <div style="display:flex;gap:16px;font-size:11px;margin-top:4px;">
+                <span><span style="display:inline-block;width:10px;height:10px;background:#0284c7;border-radius:2px;margin-right:4px;"></span>Filled (${fmtPct(tank.filled_percentage)})</span>
+                <span><span style="display:inline-block;width:10px;height:10px;background:#cbd5e1;border-radius:2px;margin-right:4px;"></span>Empty (${fmtPct(tank.empty_percentage)})</span>
+              </div>
+            </div>
+            <div>
+              <div class="tank-metrics-top">
+                <div class="metric-box">
+                  <div class="c-muted" style="font-size:11px;">Current Stock (MT)</div>
+                  <div class="mono c-blue" style="font-size:20px;font-weight:700;">${fmtMT(tank.current_stock_mt)} MT</div>
+                  <div class="mono c-muted" style="font-size:11px;">${fmtKG(tank.current_stock_kg)} KG</div>
+                </div>
+                <div class="metric-box">
+                  <div class="c-muted" style="font-size:11px;">Empty Capacity</div>
+                  <div class="mono" style="font-size:20px;font-weight:700;">${fmtMT(tank.empty_capacity_mt)} MT</div>
+                  <div class="mono c-muted" style="font-size:11px;">${fmtKG(tank.empty_capacity_kg)} KG</div>
+                </div>
+                <div class="metric-box">
+                  <div class="c-muted" style="font-size:11px;">Total Capacity</div>
+                  <div class="mono" style="font-size:20px;font-weight:700;">${fmtMT(tank.total_capacity_mt)} MT</div>
+                  <div class="mono c-muted" style="font-size:11px;">${fmtKG(tank.total_capacity_kg)} KG</div>
+                </div>
+              </div>
+              <div class="metric-table">
+                <div class="metric-row">
+                  <div class="metric-cell"><span class="c-muted">Filled %</span><strong class="mono c-blue">${fmtPct(tank.filled_percentage)}</strong></div>
+                  <div class="metric-cell"><span class="c-muted">Empty %</span><strong class="mono">${fmtPct(tank.empty_percentage)}</strong></div>
+                  <div class="metric-cell"><span class="c-muted">Depth</span><strong class="mono">${fmtM(tank.depth_meters)} m</strong></div>
+                </div>
+                <div class="metric-row">
+                  <div class="metric-cell"><span class="c-muted">Filling Meter</span><strong class="mono c-blue">${fmtM(tank.filled_meters)} m</strong></div>
+                  <div class="metric-cell"><span class="c-muted">Empty Meter</span><strong class="mono">${fmtM(tank.empty_meters)} m</strong></div>
+                  <div class="metric-cell"><span class="c-muted">Stock (KG)</span><strong class="mono">${fmtKG(tank.current_stock_kg)} KG</strong></div>
+                </div>
+                <div style="padding:8px 10px;font-size:12px;display:flex;justify-content:space-between;background:var(--surface-alt);">
+                  <span class="c-muted">Last Transaction Date & Time</span>
+                  <span class="mono">${fmtDate(tank.last_transaction_at)}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>`;
+    }
+
+    function renderDashboard() {
+      const tanks = state.tanks.map(t => computeTank(t));
+      const today = todayPrefix();
+      const matNames = Array.from(new Set([...state.materials.map(m => m.name), ...state.transactions.map(t => t.material_name)]));
+
+      const matStats = matNames.map(name => {
+        let inKg = 0, outKg = 0, todayIn = 0, todayOut = 0;
+        for (const tx of state.transactions) {
+          if (tx.material_name !== name) continue;
+          const isToday = tx.tx_date.slice(0, 10) === today;
+          if (tx.type === 'INWARD') { inKg += tx.quantity_kg; if (isToday) todayIn += tx.quantity_kg; }
+          else { outKg += tx.quantity_kg; if (isToday) todayOut += tx.quantity_kg; }
+        }
+        const activeTanks = tanks.filter(t => t.materials.some(m => m.material_name === name && m.balance_kg > 0.0001));
+        const allocCap = activeTanks.reduce((a, t) => a + t.total_capacity_kg, 0);
+        const bal = inKg - outKg;
+        return {
+          name, inKg, outKg, todayIn, todayOut, bal,
+          allocCap, emptyCap: Math.max(0, allocCap - bal), tanks: activeTanks
+        };
+      });
+
+      const emptyTanks = tanks.filter(t => t.current_stock_kg <= 0.0001);
+
+      let kpi = {
+        cap: tanks.reduce((a, t) => a + t.total_capacity_kg, 0),
+        stock: tanks.reduce((a, t) => a + t.current_stock_kg, 0),
+        empty: tanks.reduce((a, t) => a + t.empty_capacity_kg, 0),
+        inToday: state.transactions.filter(t => t.type === 'INWARD' && t.tx_date.slice(0, 10) === today).reduce((a, t) => a + t.quantity_kg, 0),
+        outToday: state.transactions.filter(t => t.type === 'OUTWARD' && t.tx_date.slice(0, 10) === today).reduce((a, t) => a + t.quantity_kg, 0),
+        count: tanks.length
+      };
+
+      if (dashMaterialFilter === 'EMPTY') {
+        const cap = emptyTanks.reduce((a, t) => a + t.total_capacity_kg, 0);
+        kpi = { cap, stock: 0, empty: cap, inToday: 0, outToday: 0, count: emptyTanks.length };
+      } else if (dashMaterialFilter !== 'ALL') {
+        const s = matStats.find(m => m.name === dashMaterialFilter);
+        if (s) {
+          kpi = { cap: s.allocCap, stock: s.bal, empty: s.emptyCap, inToday: s.todayIn, outToday: s.todayOut, count: s.tanks.length };
+        }
+      }
+
+      const filteredTxs = state.transactions
+        .filter(tx => dashMaterialFilter === 'ALL' ? true : dashMaterialFilter === 'EMPTY' ? false : tx.material_name === dashMaterialFilter)
+        .slice()
+        .sort((a, b) => b.tx_date.localeCompare(a.tx_date) || b.id - a.id)
+        .slice(0, 10);
+
+      let tanksHtml = '';
+      if (dashViewMode === 'by-material' && dashMaterialFilter === 'ALL') {
+        tanksHtml = matStats.map(g => `
+          <div style="display:flex;flex-direction:column;gap:12px;">
+            <div style="display:flex;justify-content:space-between;align-items:baseline;border-bottom:1px solid var(--border);padding-bottom:6px;">
+              <div><strong>${esc(g.name)}</strong> <span class="mono c-muted" style="font-size:12px;">(${g.tanks.length} ${g.tanks.length === 1 ? 'Tank' : 'Tanks'})</span></div>
+              <div class="mono c-blue" style="font-size:12px;font-weight:600;">Stock: ${fmtMT(g.bal / 1000)} MT (${fmtKG(g.bal)} KG)</div>
+            </div>
+            ${g.tanks.length === 0
+              ? `<div class="card c-muted" style="text-align:center;font-size:12px;">No tanks currently hold ${esc(g.name)}.</div>`
+              : `<div class="tank-grid ${g.tanks.length === 1 ? 'single' : ''}">${g.tanks.map(renderTankCard).join('')}</div>`}
+          </div>`).join('') + `
+          <div style="display:flex;flex-direction:column;gap:12px;">
+            <div style="display:flex;justify-content:space-between;align-items:baseline;border-bottom:1px solid var(--border);padding-bottom:6px;">
+              <div><strong>Empty / Standby Tanks</strong> <span class="mono c-muted" style="font-size:12px;">(${emptyTanks.length} Tanks)</span></div>
+              <div class="mono c-muted" style="font-size:12px;">Available: ${fmtMT(emptyTanks.reduce((a, t) => a + t.empty_capacity_mt, 0))} MT</div>
+            </div>
+            <div class="tank-grid ${emptyTanks.length === 1 ? 'single' : ''}">${emptyTanks.map(renderTankCard).join('')}</div>
+          </div>`;
+      } else {
+        const list = dashMaterialFilter === 'ALL' ? tanks : dashMaterialFilter === 'EMPTY' ? emptyTanks : tanks.filter(t => t.materials.some(m => m.material_name === dashMaterialFilter && m.balance_kg > 0.0001));
+        tanksHtml = list.length === 0
+          ? `<div class="card c-muted" style="text-align:center;">No tanks match the selected filter.</div>`
+          : `<div class="tank-grid ${list.length === 1 ? 'single' : ''}">${list.map(renderTankCard).join('')}</div>`;
+      }
+
+      return `
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+          <div class="seg-bar">
+            <button class="seg-btn ${dashMaterialFilter === 'ALL' ? 'active' : ''}" onclick="setDashFilter('ALL')">All Materials (${tanks.length})</button>
+            ${matStats.map(s => `<button class="seg-btn ${dashMaterialFilter === s.name ? 'active' : ''}" onclick="setDashFilter('${esc(s.name)}')">${esc(s.name)} (${s.tanks.length})</button>`).join('')}
+            <button class="seg-btn ${dashMaterialFilter === 'EMPTY' ? 'active' : ''}" onclick="setDashFilter('EMPTY')">Empty Tanks (${emptyTanks.length})</button>
+          </div>
+          <div class="seg-bar">
+            <button class="seg-btn ${dashViewMode === 'by-material' ? 'active' : ''}" onclick="setDashMode('by-material')">Grouped by Material</button>
+            <button class="seg-btn ${dashViewMode === 'all-tanks' ? 'active' : ''}" onclick="setDashMode('all-tanks')">Sequential (Tank 01–${String(tanks.length).padStart(2, '0')})</button>
+          </div>
+        </div>
+
+        <div class="mat-grid">
+          ${matStats.map(s => `
+            <div class="card" style="cursor:pointer;${dashMaterialFilter === s.name ? 'border-color:var(--blue);' : ''}" onclick="setDashFilter('${dashMaterialFilter === s.name ? 'ALL' : esc(s.name)}')">
+              <div style="display:flex;justify-content:space-between;border-bottom:1px solid var(--border);padding-bottom:10px;">
+                <div>
+                  <strong>${esc(s.name)}</strong>
+                  <div class="c-muted" style="font-size:12px;">${s.tanks.length ? 'Stored in: ' + s.tanks.map(t => t.name).join(', ') : 'No active tanks holding stock'}</div>
+                </div>
+                <div class="right">
+                  <div class="mono c-blue" style="font-size:17px;font-weight:700;">${fmtMT(s.bal / 1000)} MT</div>
+                  <div class="mono c-muted" style="font-size:11px;">${fmtKG(s.bal)} KG</div>
+                </div>
+              </div>
+              <div style="display:flex;justify-content:space-between;padding-top:10px;font-size:12px;">
+                <div><span class="c-muted">Inward:</span> <strong class="mono c-green">+${fmtMT(s.inKg / 1000)} MT</strong></div>
+                <div><span class="c-muted">Outward:</span> <strong class="mono c-red">-${fmtMT(s.outKg / 1000)} MT</strong></div>
+              </div>
+            </div>`).join('')}
+        </div>
+
+        <div class="kpi-grid">
+          <div class="card"><div class="c-muted" style="font-size:12px;">Total Tank Capacity</div><div class="mono" style="font-size:20px;font-weight:700;margin-top:6px;">${fmtMT(kpi.cap / 1000)} MT</div><div class="mono c-muted" style="font-size:11px;">${fmtKG(kpi.cap)} KG</div></div>
+          <div class="card"><div class="c-blue" style="font-size:12px;">Total Available Stock</div><div class="mono c-blue" style="font-size:20px;font-weight:700;margin-top:6px;">${fmtMT(kpi.stock / 1000)} MT</div><div class="mono c-muted" style="font-size:11px;">${fmtKG(kpi.stock)} KG</div></div>
+          <div class="card"><div class="c-muted" style="font-size:12px;">Total Empty Capacity</div><div class="mono" style="font-size:20px;font-weight:700;margin-top:6px;">${fmtMT(kpi.empty / 1000)} MT</div><div class="mono c-muted" style="font-size:11px;">${fmtKG(kpi.empty)} KG</div></div>
+          <div class="card"><div class="c-green" style="font-size:12px;">Total Inward Today</div><div class="mono c-green" style="font-size:20px;font-weight:700;margin-top:6px;">+${fmtMT(kpi.inToday / 1000)} MT</div><div class="mono c-muted" style="font-size:11px;">${fmtKG(kpi.inToday)} KG</div></div>
+          <div class="card"><div class="c-red" style="font-size:12px;">Total Outward Today</div><div class="mono c-red" style="font-size:20px;font-weight:700;margin-top:6px;">-${fmtMT(kpi.outToday / 1000)} MT</div><div class="mono c-muted" style="font-size:11px;">${fmtKG(kpi.outToday)} KG</div></div>
+          <div class="card"><div class="c-muted" style="font-size:12px;">Total Number of Tanks</div><div class="mono" style="font-size:20px;font-weight:700;margin-top:6px;">${kpi.count} ${kpi.count === 1 ? 'Tank' : 'Tanks'}</div><div class="c-muted" style="font-size:11px;">${dashMaterialFilter === 'ALL' ? 'Active storage units' : esc(dashMaterialFilter)}</div></div>
+        </div>
+
+        <div style="display:flex;flex-direction:column;gap:18px;">${tanksHtml}</div>
+
+        <div class="table-wrap">
+          <div style="padding:14px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
+            <strong>Recent Register Movements</strong>
+            <button class="btn" onclick="switchNav('history')">View Full History</button>
+          </div>
+          <table>
+            <thead><tr><th>Date</th><th>ID</th><th>Type</th><th>Tank</th><th>Material</th><th class="right">Qty (MT)</th><th class="right">Qty (KG)</th><th>Party</th></tr></thead>
+            <tbody>
+              ${filteredTxs.length === 0 ? `<tr><td colspan="8" class="c-muted" style="text-align:center;padding:24px;">No movements recorded.</td></tr>` : filteredTxs.map(tx => {
+                const tankObj = tanks.find(t => t.id === tx.tank_id);
+                const isIn = tx.type === 'INWARD';
+                return `<tr>
+                  <td class="mono">${fmtDate(tx.tx_date)}</td>
+                  <td class="mono"><strong>${esc(tx.tx_code)}</strong></td>
+                  <td class="${isIn ? 'c-green' : 'c-red'}" style="font-weight:700;">${tx.type}</td>
+                  <td>${esc(tankObj ? tankObj.name : '')} — <span class="c-blue">${esc(tankObj ? tankObj.productLabel : tx.material_name)}</span></td>
+                  <td>${esc(tx.material_name)}</td>
+                  <td class="right mono ${isIn ? 'c-green' : 'c-red'}" style="font-weight:700;">${isIn ? '+' : '-'}${fmtMT(tx.quantity_mt)} MT</td>
+                  <td class="right mono">${fmtKG(tx.quantity_kg)} KG</td>
+                  <td>${esc(tx.party_name || '-')}</td>
+                </tr>`;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>`;
+    }
+
+    function renderTankManagement() {
+      const tanks = state.tanks.map(t => computeTank(t));
+      return `
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+          <div>
+            <h2>Tank Configuration & Management</h2>
+            <p class="c-muted" style="font-size:13px;margin:4px 0 0;">Configure vertical storage tanks, total capacities in KG and MT, and tank depth in meters</p>
+          </div>
+          <div style="display:flex;gap:8px;">
+            <button class="btn" onclick="window.print()">Download PDF / Print</button>
+            <button class="btn btn-dark" onclick="openTankModal()">+ Add New Tank</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Tank Name</th><th>Location</th><th class="right">Capacity (MT)</th><th class="right">Capacity (KG)</th><th class="right">Depth</th><th class="right">Stock (MT)</th><th class="right">Empty (MT)</th><th class="right">Filled / Empty</th><th>Last Transaction</th><th class="right no-print">Actions</th></tr>
+            </thead>
+            <tbody>
+              ${tanks.map(t => `<tr>
+                <td><strong>${esc(t.name)}</strong> — <span class="c-blue" style="font-weight:600;">${esc(t.productLabel)}</span></td>
+                <td>${esc(t.location)}</td>
+                <td class="right mono"><strong>${fmtMT(t.total_capacity_mt)} MT</strong></td>
+                <td class="right mono c-muted">${fmtKG(t.total_capacity_kg)} KG</td>
+                <td class="right mono">${fmtM(t.depth_meters)} m</td>
+                <td class="right mono c-blue"><strong>${fmtMT(t.current_stock_mt)} MT</strong></td>
+                <td class="right mono">${fmtMT(t.empty_capacity_mt)} MT</td>
+                <td class="right mono"><span class="c-blue">${fmtPct(t.filled_percentage)}</span> / ${fmtPct(t.empty_percentage)}</td>
+                <td class="mono c-muted">${fmtDate(t.last_transaction_at)}</td>
+                <td class="right no-print">
+                  <button class="btn" onclick="openDetailModal(${t.id})">Details</button>
+                  <button class="btn" onclick="openTankModal(${t.id})">Edit</button>
+                  <button class="btn btn-red" onclick="deleteTank(${t.id})">Delete</button>
+                </td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>`;
+    }
+
+    function renderRegister(mode) {
+      const q = regFilters.search.trim().toLowerCase();
+      const rows = state.transactions
+        .filter(tx => {
+          if (mode === 'INWARD' && tx.type !== 'INWARD') return false;
+          if (mode === 'OUTWARD' && tx.type !== 'OUTWARD') return false;
+          if (mode === 'HISTORY' && regFilters.type !== 'ALL' && tx.type !== regFilters.type) return false;
+          if (regFilters.tankId !== 'ALL' && String(tx.tank_id) !== regFilters.tankId) return false;
+          if (regFilters.material !== 'ALL' && tx.material_name !== regFilters.material) return false;
+          const d = tx.tx_date.slice(0, 10);
+          if (regFilters.start && d < regFilters.start) return false;
+          if (regFilters.end && d > regFilters.end) return false;
+          if (q) {
+            const tankName = state.tanks.find(t => t.id === tx.tank_id)?.name || '';
+            const hay = `${tx.tx_code} ${tankName} ${tx.material_name} ${tx.reference_number} ${tx.party_name} ${tx.vehicle_number} ${tx.remarks}`.toLowerCase();
+            if (!hay.includes(q)) return false;
+          }
+          return true;
+        })
+        .sort((a, b) => b.tx_date.localeCompare(a.tx_date) || b.id - a.id);
+
+      const title = mode === 'INWARD' ? 'Material Inward Register' : mode === 'OUTWARD' ? 'Material Outward Register' : 'Transaction History & Audit Trail';
+      return `
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+          <div><h2>${title}</h2></div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;" class="no-print">
+            ${mode !== 'OUTWARD' ? `<button class="btn btn-green" onclick="openTxModal('INWARD')">+ Add Inward</button>` : ''}
+            ${mode !== 'INWARD' ? `<button class="btn btn-red" onclick="openTxModal('OUTWARD')">- Add Outward</button>` : ''}
+            <button class="btn" onclick="exportRegisterCSV('${mode}')">Export Excel (CSV)</button>
+            <button class="btn" onclick="window.print()">Download PDF / Print</button>
+          </div>
+        </div>
+
+        ${mode === 'HISTORY' ? `
+          <div class="seg-bar no-print">
+            <button class="seg-btn ${historySubTab === 'ledger' ? 'active' : ''}" onclick="historySubTab='ledger';render();">Transaction Ledger (${rows.length})</button>
+            <button class="seg-btn ${historySubTab === 'audit' ? 'active' : ''}" onclick="historySubTab='audit';render();">Audit Log (${state.auditLogs.length})</button>
+          </div>` : ''}
+
+        ${mode === 'HISTORY' && historySubTab === 'audit' ? `
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Timestamp</th><th>Action</th><th>Entity</th><th>Summary</th><th>Performed By</th></tr></thead>
+              <tbody>${state.auditLogs.map(a => `<tr>
+                <td class="mono c-muted">${fmtDate(a.created_at)}</td>
+                <td class="mono"><strong>${esc(a.action)}</strong></td>
+                <td>${esc(a.entity_type)}</td>
+                <td>${esc(a.summary)}</td>
+                <td>${esc(a.performed_by)}</td>
+              </tr>`).join('')}</tbody>
+            </table>
+          </div>` : `
+          <div class="card no-print" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;">
+            <input type="text" placeholder="Search ID, ref, party, vehicle..." value="${esc(regFilters.search)}" oninput="regFilters.search=this.value;render();" />
+            ${mode === 'HISTORY' ? `<select onchange="regFilters.type=this.value;render();"><option value="ALL">All Types</option><option value="INWARD" ${regFilters.type==='INWARD'?'selected':''}>Inward</option><option value="OUTWARD" ${regFilters.type==='OUTWARD'?'selected':''}>Outward</option></select>` : ''}
+            <select onchange="regFilters.tankId=this.value;render();">
+              <option value="ALL">All Tanks</option>
+              ${state.tanks.map(t => `<option value="${t.id}" ${regFilters.tankId===String(t.id)?'selected':''}>${esc(t.name)}</option>`).join('')}
+            </select>
+            <select onchange="regFilters.material=this.value;render();">
+              <option value="ALL">All Materials</option>
+              ${state.materials.map(m => `<option value="${esc(m.name)}" ${regFilters.material===m.name?'selected':''}>${esc(m.name)}</option>`).join('')}
+            </select>
+            <input type="date" value="${regFilters.start}" onchange="regFilters.start=this.value;render();" />
+            <input type="date" value="${regFilters.end}" onchange="regFilters.end=this.value;render();" />
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Date</th><th>Transaction ID</th><th>Type</th><th>Tank</th><th>Material</th><th class="right">Qty (KG)</th><th class="right">Qty (MT)</th><th>Ref No.</th><th>Supplier / Customer</th><th>Vehicle</th><th>Remarks</th><th class="right no-print">Action</th></tr></thead>
+              <tbody>
+                ${rows.length === 0 ? `<tr><td colspan="12" class="c-muted" style="text-align:center;padding:26px;">No matching transactions.</td></tr>` : rows.map(tx => {
+                  const isIn = tx.type === 'INWARD';
+                  const tankName = state.tanks.find(t => t.id === tx.tank_id)?.name || '-';
+                  return `<tr>
+                    <td class="mono">${fmtDate(tx.tx_date)}</td>
+                    <td class="mono"><strong>${esc(tx.tx_code)}</strong></td>
+                    <td class="${isIn ? 'c-green' : 'c-red'}" style="font-weight:700;">${tx.type}</td>
+                    <td>${esc(tankName)}</td>
+                    <td>${esc(tx.material_name)}</td>
+                    <td class="right mono ${isIn ? 'c-green' : 'c-red'}"><strong>${isIn ? '+' : '-'}${fmtKG(tx.quantity_kg)}</strong></td>
+                    <td class="right mono ${isIn ? 'c-green' : 'c-red'}"><strong>${isIn ? '+' : '-'}${fmtMT(tx.quantity_mt)} MT</strong></td>
+                    <td class="mono">${esc(tx.reference_number || '-')}</td>
+                    <td>${esc(tx.party_name || '-')}</td>
+                    <td class="mono">${esc(tx.vehicle_number || '-')}</td>
+                    <td>${esc(tx.remarks || '-')}</td>
+                    <td class="right no-print">
+                      <button class="btn" onclick="openTxModal('${tx.type}', null, ${tx.id})">Edit</button>
+                      <button class="btn btn-red" onclick="deleteTransaction(${tx.id})">Delete</button>
+                    </td>
+                  </tr>`;
+                }).join('')}
+              </tbody>
+            </table>
+          </div>`}`;
+    }
+
+    function renderReports() {
+      const txs = state.transactions.filter(tx => {
+        if (repFilters.tankId !== 'ALL' && String(tx.tank_id) !== repFilters.tankId) return false;
+        if (repFilters.material !== 'ALL' && tx.material_name !== repFilters.material) return false;
+        const d = tx.tx_date.slice(0, 10);
+        if (repFilters.start && d < repFilters.start) return false;
+        if (repFilters.end && d > repFilters.end) return false;
+        return true;
+      });
+      const matNames = repFilters.material === 'ALL' ? state.materials.map(m => m.name) : [repFilters.material];
+      const summaryRows = matNames.map(name => {
+        const list = txs.filter(t => t.material_name === name);
+        const inKg = list.filter(t => t.type === 'INWARD').reduce((a, b) => a + b.quantity_kg, 0);
+        const outKg = list.filter(t => t.type === 'OUTWARD').reduce((a, b) => a + b.quantity_kg, 0);
+        return { name, inKg, outKg, balKg: inKg - outKg };
+      });
+      return `
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+          <div><h2>Material-Wise Stock Report</h2><p class="c-muted" style="font-size:13px;margin:4px 0 0;">Consolidated inward, outward, and current balance in KG & MT</p></div>
+          <div style="display:flex;gap:8px;" class="no-print">
+            <button class="btn" onclick="window.print()">Download PDF / Print</button>
+          </div>
+        </div>
+        <div class="card no-print" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;">
+          <select onchange="repFilters.tankId=this.value;render();">
+            <option value="ALL">All Tanks</option>
+            ${state.tanks.map(t => `<option value="${t.id}" ${repFilters.tankId===String(t.id)?'selected':''}>${esc(t.name)}</option>`).join('')}
+          </select>
+          <select onchange="repFilters.material=this.value;render();">
+            <option value="ALL">All Materials</option>
+            ${state.materials.map(m => `<option value="${esc(m.name)}" ${repFilters.material===m.name?'selected':''}>${esc(m.name)}</option>`).join('')}
+          </select>
+          <input type="date" value="${repFilters.start}" onchange="repFilters.start=this.value;render();" />
+          <input type="date" value="${repFilters.end}" onchange="repFilters.end=this.value;render();" />
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Material Name</th><th class="right">Total Inward (KG)</th><th class="right">Total Inward (MT)</th><th class="right">Total Outward (KG)</th><th class="right">Total Outward (MT)</th><th class="right">Current Balance (KG)</th><th class="right">Current Balance (MT)</th></tr></thead>
+            <tbody>
+              ${summaryRows.map(r => `<tr>
+                <td><strong>${esc(r.name)}</strong></td>
+                <td class="right mono c-green">${fmtKG(r.inKg)} KG</td>
+                <td class="right mono c-green"><strong>${fmtMT(r.inKg / 1000)} MT</strong></td>
+                <td class="right mono c-red">${fmtKG(r.outKg)} KG</td>
+                <td class="right mono c-red"><strong>${fmtMT(r.outKg / 1000)} MT</strong></td>
+                <td class="right mono">${fmtKG(r.balKg)} KG</td>
+                <td class="right mono c-blue"><strong>${fmtMT(r.balKg / 1000)} MT</strong></td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>`;
+    }
+
+    function renderSettings() {
+      return `
+        <div style="max-width:860px;display:flex;flex-direction:column;gap:20px;">
+          <h2>System Settings & Material Master Data</h2>
+          <form class="card" onsubmit="saveSettingsForm(event)" style="display:flex;flex-direction:column;gap:14px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <h3>Operator & Facility Configuration</h3>
+              <div class="seg-bar">
+                <button type="button" class="seg-btn ${state.settings.theme==='light'?'active':''}" onclick="setTheme('light')">Light</button>
+                <button type="button" class="seg-btn ${state.settings.theme==='dark'?'active':''}" onclick="setTheme('dark')">Dark</button>
+              </div>
+            </div>
+            <div class="form-grid-2">
+              <div><label>Operator Name *</label><input id="set-name" value="${esc(state.settings.full_name)}" required /></div>
+              <div><label>Email *</label><input id="set-email" type="email" value="${esc(state.settings.email)}" required /></div>
+              <div><label>Role</label><input id="set-role" value="${esc(state.settings.role)}" /></div>
+              <div><label>Facility Name</label><input id="set-facility" value="${esc(state.settings.facility_name)}" /></div>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <button type="button" class="btn btn-red" onclick="resetDemoData()">Reset Default Data</button>
+              <button type="submit" class="btn btn-dark">Save Settings</button>
+            </div>
+          </form>
+
+          <div class="card" style="display:flex;flex-direction:column;gap:14px;">
+            <h3>Material Master Data (Create / Edit / Delete)</h3>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Material Name</th><th>Code</th><th>Description</th><th class="right">Actions</th></tr></thead>
+                <tbody>
+                  ${state.materials.map(m => editingMatId === m.id ? `
+                    <tr>
+                      <td><input id="edit-mat-name" value="${esc(m.name)}" style="text-transform:uppercase;" /></td>
+                      <td><input id="edit-mat-code" value="${esc(m.code)}" style="text-transform:uppercase;" /></td>
+                      <td><input id="edit-mat-desc" value="${esc(m.description)}" /></td>
+                      <td class="right">
+                        <button type="button" class="btn btn-blue" onclick="saveMaterialEdit(${m.id})">Save</button>
+                        <button type="button" class="btn" onclick="editingMatId=null;render();">Cancel</button>
+                      </td>
+                    </tr>` : `
+                    <tr>
+                      <td><strong>${esc(m.name)}</strong></td>
+                      <td class="mono">${esc(m.code)}</td>
+                      <td class="c-muted">${esc(m.description || '-')}</td>
+                      <td class="right">
+                        <button type="button" class="btn" onclick="editingMatId=${m.id};render();">Edit</button>
+                        <button type="button" class="btn btn-red" onclick="deleteMaterial(${m.id})">Delete</button>
+                      </td>
+                    </tr>`).join('')}
+                </tbody>
+              </table>
+            </div>
+            <form onsubmit="addMaterialForm(event)" style="display:grid;grid-template-columns:2fr 1fr 2fr auto;gap:8px;">
+              <input id="new-mat-name" placeholder="Material Name (e.g. FURNACE OIL)" style="text-transform:uppercase;" required />
+              <input id="new-mat-code" placeholder="Code" style="text-transform:uppercase;" />
+              <input id="new-mat-desc" placeholder="Description (optional)" />
+              <button type="submit" class="btn btn-dark">+ Add Material</button>
+            </form>
+          </div>
+        </div>`;
+    }
+
+    function render() {
+      document.documentElement.classList.toggle('dark', state.settings.theme === 'dark');
+      document.getElementById('brand-facility').textContent = state.settings.facility_name;
+      document.getElementById('sidebar-operator').textContent = state.settings.full_name;
+      document.getElementById('sidebar-role').textContent = state.settings.role;
+
+      const titles = {
+        dashboard: 'Dashboard', tanks: 'Tank Management', inward: 'Material Inward',
+        outward: 'Material Outward', history: 'Transaction History', reports: 'Stock Reports', settings: 'Settings'
+      };
+      document.getElementById('page-title').textContent = titles[activeNav];
+      document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.nav === activeNav));
+
+      const main = document.getElementById('app-content');
+      if (activeNav === 'dashboard') main.innerHTML = renderDashboard();
+      else if (activeNav === 'tanks') main.innerHTML = renderTankManagement();
+      else if (activeNav === 'inward') main.innerHTML = renderRegister('INWARD');
+      else if (activeNav === 'outward') main.innerHTML = renderRegister('OUTWARD');
+      else if (activeNav === 'history') main.innerHTML = renderRegister('HISTORY');
+      else if (activeNav === 'reports') main.innerHTML = renderReports();
+      else if (activeNav === 'settings') main.innerHTML = renderSettings();
+    }
+
+    // Navigation
+    document.querySelectorAll('.nav-btn').forEach(btn => {
+      btn.addEventListener('click', () => switchNav(btn.dataset.nav));
+    });
+    function switchNav(nav) {
+      activeNav = nav;
+      document.getElementById('sidebar').classList.remove('open');
+      render();
+    }
+    function toggleMobileSidebar() {
+      document.getElementById('sidebar').classList.toggle('open');
+    }
+    function setDashFilter(f) { dashMaterialFilter = f; render(); }
+    function setDashMode(m) { dashViewMode = m; render(); }
+
+    // Transaction Modal Actions
+    function openTxModal(type, tankId = null, editId = null) {
+      if (state.tanks.length === 0) { showToast('error', 'Please create a tank first.'); return; }
+      txModalState = { mode: editId ? 'edit' : 'create', type, editId, confirmStep: false };
+      setTxConfirmStep(false);
+      document.getElementById('tx-error').style.display = 'none';
+
+      const tankSel = document.getElementById('tx-tank');
+      tankSel.innerHTML = state.tanks.map(t => {
+        const st = computeTank(t);
+        return `<option value="${t.id}">${esc(t.name)} — ${esc(st.productLabel)} (${fmtMT(st.current_stock_mt)} / ${fmtMT(st.total_capacity_mt)} MT)</option>`;
+      }).join('');
+
+      const matSel = document.getElementById('tx-material');
+      matSel.innerHTML = state.materials.map(m => `<option value="${esc(m.name)}">${esc(m.name)}</option>`).join('');
+
+      if (editId) {
+        const tx = state.transactions.find(t => t.id === editId);
+        txModalState.type = tx.type;
+        document.getElementById('tx-date').value = tx.tx_date.slice(0, 16);
+        tankSel.value = String(tx.tank_id);
+        matSel.value = tx.material_name;
+        document.getElementById('tx-qty').value = tx.quantity_kg;
+        document.getElementById('tx-ref').value = tx.reference_number;
+        document.getElementById('tx-party').value = tx.party_name;
+        document.getElementById('tx-vehicle').value = tx.vehicle_number;
+        document.getElementById('tx-remarks').value = tx.remarks;
+      } else {
+        document.getElementById('tx-date').value = nowLocalInput();
+        tankSel.value = String(tankId || state.tanks[0].id);
+        document.getElementById('tx-qty').value = '';
+        document.getElementById('tx-ref').value = '';
+        document.getElementById('tx-party').value = '';
+        document.getElementById('tx-vehicle').value = '';
+        document.getElementById('tx-remarks').value = '';
+      }
+
+      const isIn = txModalState.type === 'INWARD';
+      document.getElementById('tx-modal-title').textContent = `${editId ? 'Edit' : 'Add'} Material ${isIn ? 'Inward' : 'Outward'} Entry`;
+      document.getElementById('tx-party-label').textContent = isIn ? 'Supplier Name *' : 'Customer / Department *';
+      updateTxPreview();
+      document.getElementById('tx-modal-backdrop').classList.add('open');
+    }
+
+    function closeTxModal() { document.getElementById('tx-modal-backdrop').classList.remove('open'); }
+
+    function setTxConfirmStep(confirm) {
+      txModalState.confirmStep = confirm;
+      document.getElementById('tx-step-edit').style.display = confirm ? 'none' : 'block';
+      document.getElementById('tx-step-confirm').style.display = confirm ? 'block' : 'none';
+      document.getElementById('tx-back-btn').style.display = confirm ? 'inline-flex' : 'none';
+      const btn = document.getElementById('tx-submit-btn');
+      btn.className = `btn ${txModalState.type === 'INWARD' ? 'btn-green' : 'btn-red'}`;
+      btn.textContent = confirm ? `Confirm & Save ${txModalState.type}` : 'Review & Confirm';
+    }
+
+    function updateTxPreview() {
+      const tankId = Number(document.getElementById('tx-tank').value);
+      const qty = Number(document.getElementById('tx-qty').value) || 0;
+      const mat = document.getElementById('tx-material').value;
+      document.getElementById('tx-mt-preview').textContent = `= ${fmtMT(qty / 1000)} MT`;
+      const tank = state.tanks.find(t => t.id === tankId);
+      if (!tank) return;
+      const st = computeTank(tank);
+      const matBal = st.materials.find(m => m.material_name === mat)?.balance_kg || 0;
+      document.getElementById('tx-tank-info').innerHTML = `
+        Current Stock: <strong>${fmtMT(st.current_stock_mt)} MT</strong> (${fmtKG(st.current_stock_kg)} KG) ·
+        Empty Capacity: <strong>${fmtMT(st.empty_capacity_mt)} MT</strong> ·
+        ${esc(mat)}: <strong>${fmtMT(matBal / 1000)} MT</strong>`;
+    }
+
+    function handleTxFormSubmit(e) {
+      e.preventDefault();
+      const errBox = document.getElementById('tx-error');
+      errBox.style.display = 'none';
+
+      const payload = {
+        type: txModalState.type,
+        tx_date: document.getElementById('tx-date').value,
+        tank_id: Number(document.getElementById('tx-tank').value),
+        material_name: document.getElementById('tx-material').value,
+        quantity_kg: Number(document.getElementById('tx-qty').value),
+        quantity_mt: Number(document.getElementById('tx-qty').value) / 1000,
+        reference_number: document.getElementById('tx-ref').value.trim(),
+        party_name: document.getElementById('tx-party').value.trim(),
+        vehicle_number: document.getElementById('tx-vehicle').value.trim().toUpperCase(),
+        remarks: document.getElementById('tx-remarks').value.trim()
+      };
+
+      if (!(payload.quantity_kg > 0)) {
+        errBox.textContent = 'Quantity (KG) must be greater than 0.';
+        errBox.style.display = 'block';
+        return;
+      }
+
+      const nextList = txModalState.editId
+        ? state.transactions.map(t => t.id === txModalState.editId ? { ...t, ...payload } : t)
+        : [...state.transactions, { ...payload, id: state.nextTxId, tx_code: 'PREVIEW', created_at: new Date().toISOString() }];
+
+      const err = validateAllTanks(nextList);
+      if (err) {
+        errBox.textContent = err;
+        errBox.style.display = 'block';
+        setTxConfirmStep(false);
+        return;
+      }
+
+      const tank = state.tanks.find(t => t.id === payload.tank_id);
+      const proj = computeTank(tank, nextList);
+
+      if (!txModalState.confirmStep) {
+        document.getElementById('tx-confirm-summary').innerHTML = `
+          <div><span class="c-muted">Tank:</span><br><strong>${esc(tank.name)}</strong></div>
+          <div><span class="c-muted">Material:</span><br><strong>${esc(payload.material_name)}</strong></div>
+          <div><span class="c-muted">Quantity:</span><br><strong class="mono">${fmtKG(payload.quantity_kg)} KG (${fmtMT(payload.quantity_mt)} MT)</strong></div>
+          <div><span class="c-muted">Projected Level:</span><br><strong class="mono c-blue">${fmtMT(proj.current_stock_mt)} MT (${fmtPct(proj.filled_percentage)})</strong></div>`;
+        setTxConfirmStep(true);
+        return;
+      }
+
+      if (txModalState.editId) {
+        state.transactions = nextList;
+        const edited = state.transactions.find(t => t.id === txModalState.editId);
+        addAudit('UPDATE', 'TRANSACTION', `Updated ${edited.tx_code}: ${fmtKG(payload.quantity_kg)} KG ${payload.material_name} in ${tank.name}`);
+        showToast('success', `Updated ${edited.tx_code} and recalculated stock.`);
+      } else {
+        const prefix = payload.type === 'INWARD' ? 'INW' : 'OUT';
+        const code = `${prefix}-${payload.tx_date.slice(0, 10).replaceAll('-', '')}-${String(state.nextTxId).padStart(4, '0')}`;
+        state.transactions.push({ ...payload, id: state.nextTxId++, tx_code: code, created_at: new Date().toISOString() });
+        addAudit('CREATE', 'TRANSACTION', `${payload.type} ${code}: ${fmtKG(payload.quantity_kg)} KG ${payload.material_name} (${tank.name})`);
+        showToast('success', `Saved ${code} (${fmtMT(payload.quantity_mt)} MT).`);
+      }
+
+      saveState();
+      closeTxModal();
+      render();
+    }
+
+    function deleteTransaction(id) {
+      const tx = state.transactions.find(t => t.id === id);
+      if (!tx || !confirm(`Delete transaction ${tx.tx_code} (${fmtKG(tx.quantity_kg)} KG)?`)) return;
+      const nextList = state.transactions.filter(t => t.id !== id);
+      const err = validateAllTanks(nextList);
+      if (err) { showToast('error', err); return; }
+      state.transactions = nextList;
+      addAudit('DELETE', 'TRANSACTION', `Deleted ${tx.type} ${tx.tx_code} (${fmtKG(tx.quantity_kg)} KG ${tx.material_name})`);
+      saveState();
+      render();
+      showToast('success', `Deleted ${tx.tx_code} and recalculated tank stock.`);
+    }
+
+    // Tank Modal Actions
+    function openTankModal(editId = null) {
+      tankModalEditId = editId;
+      document.getElementById('tank-error').style.display = 'none';
+      if (editId) {
+        const t = state.tanks.find(x => x.id === editId);
+        document.getElementById('tank-modal-title').textContent = `Edit ${t.name}`;
+        document.getElementById('tank-name').value = t.name;
+        document.getElementById('tank-cap').value = t.total_capacity_kg;
+        document.getElementById('tank-mt-preview').textContent = `= ${fmtMT(t.total_capacity_kg / 1000)} MT`;
+        document.getElementById('tank-depth').value = t.depth_meters;
+        document.getElementById('tank-loc').value = t.location;
+        document.getElementById('tank-notes').value = t.notes;
+      } else {
+        document.getElementById('tank-modal-title').textContent = 'Add New Tank';
+        document.getElementById('tank-name').value = '';
+        document.getElementById('tank-cap').value = '2000000';
+        document.getElementById('tank-mt-preview').textContent = '= 2,000 MT';
+        document.getElementById('tank-depth').value = '7';
+        document.getElementById('tank-loc').value = 'Main Storage Bay A';
+        document.getElementById('tank-notes').value = '';
+      }
+      document.getElementById('tank-modal-backdrop').classList.add('open');
+    }
+    function closeTankModal() { document.getElementById('tank-modal-backdrop').classList.remove('open'); }
+
+    function handleTankFormSubmit(e) {
+      e.preventDefault();
+      const errBox = document.getElementById('tank-error');
+      const name = document.getElementById('tank-name').value.trim();
+      const cap = Number(document.getElementById('tank-cap').value);
+      const depth = Number(document.getElementById('tank-depth').value);
+      const loc = document.getElementById('tank-loc').value.trim() || 'Main Storage Bay';
+      const notes = document.getElementById('tank-notes').value.trim();
+
+      if (state.tanks.some(t => t.name.toLowerCase() === name.toLowerCase() && t.id !== tankModalEditId)) {
+        errBox.textContent = `Tank "${name}" already exists.`;
+        errBox.style.display = 'block';
+        return;
+      }
+      if (tankModalEditId) {
+        const current = computeTank(state.tanks.find(t => t.id === tankModalEditId));
+        if (cap < current.current_stock_kg - 0.0001) {
+          errBox.textContent = `Capacity cannot be less than current stock (${fmtKG(current.current_stock_kg)} KG).`;
+          errBox.style.display = 'block';
+          return;
+        }
+        state.tanks = state.tanks.map(t => t.id === tankModalEditId ? { ...t, name, total_capacity_kg: cap, depth_meters: depth, location: loc, notes } : t);
+        addAudit('TANK_UPDATE', 'TANK', `Updated ${name} (${fmtMT(cap / 1000)} MT, ${depth}m)`);
+        showToast('success', `Updated ${name}.`);
+      } else {
+        state.tanks.push({ id: state.nextTankId++, name, total_capacity_kg: cap, depth_meters: depth, location: loc, notes });
+        addAudit('TANK_CREATE', 'TANK', `Created ${name} (${fmtMT(cap / 1000)} MT, ${depth}m)`);
+        showToast('success', `Created new tank ${name}.`);
+      }
+      saveState();
+      closeTankModal();
+      render();
+    }
+
+    function deleteTank(id) {
+      const tank = computeTank(state.tanks.find(t => t.id === id));
+      if (tank.current_stock_kg > 0) { showToast('error', `Cannot delete ${tank.name} while it holds stock.`); return; }
+      if (state.transactions.some(tx => tx.tank_id === id)) { showToast('error', `Cannot delete ${tank.name} because register transactions reference it.`); return; }
+      if (!confirm(`Delete ${tank.name} permanently?`)) return;
+      state.tanks = state.tanks.filter(t => t.id !== id);
+      addAudit('TANK_DELETE', 'TANK', `Deleted ${tank.name}`);
+      saveState();
+      render();
+      showToast('success', `Deleted ${tank.name}.`);
+    }
+
+    function openDetailModal(id) {
+      const t = computeTank(state.tanks.find(x => x.id === id));
+      document.getElementById('detail-title').textContent = `${t.name} — ${t.productLabel}`;
+      document.getElementById('detail-sub').textContent = `${t.location} · Specifications`;
+      document.getElementById('detail-body').innerHTML = `
+        <div class="form-grid-2" style="font-size:13px;">
+          <div class="metric-box"><div class="c-muted" style="font-size:11px;">Total Capacity</div><strong class="mono">${fmtMT(t.total_capacity_mt)} MT (${fmtKG(t.total_capacity_kg)} KG)</strong></div>
+          <div class="metric-box"><div class="c-muted" style="font-size:11px;">Tank Depth</div><strong class="mono">${fmtM(t.depth_meters)} Meters</strong></div>
+          <div class="metric-box"><div class="c-muted" style="font-size:11px;">Current Stock</div><strong class="mono c-blue">${fmtMT(t.current_stock_mt)} MT (${fmtKG(t.current_stock_kg)} KG)</strong></div>
+          <div class="metric-box"><div class="c-muted" style="font-size:11px;">Empty Capacity</div><strong class="mono">${fmtMT(t.empty_capacity_mt)} MT (${fmtKG(t.empty_capacity_kg)} KG)</strong></div>
+          <div class="metric-box"><div class="c-muted" style="font-size:11px;">Filled / Empty (%)</div><strong class="mono">${fmtPct(t.filled_percentage)} / ${fmtPct(t.empty_percentage)}</strong></div>
+          <div class="metric-box"><div class="c-muted" style="font-size:11px;">Filled / Empty (m)</div><strong class="mono">${fmtM(t.filled_meters)} m / ${fmtM(t.empty_meters)} m</strong></div>
+        </div>
+        <div style="font-size:12px;" class="c-muted">Last Transaction: ${fmtDate(t.last_transaction_at)}</div>`;
+      document.getElementById('tank-detail-backdrop').classList.add('open');
+    }
+    function closeDetailModal() { document.getElementById('tank-detail-backdrop').classList.remove('open'); }
+
+    // Settings & Material CRUD
+    function setTheme(theme) { state.settings.theme = theme; saveState(); render(); }
+    function saveSettingsForm(e) {
+      e.preventDefault();
+      state.settings.full_name = document.getElementById('set-name').value.trim();
+      state.settings.email = document.getElementById('set-email').value.trim();
+      state.settings.role = document.getElementById('set-role').value.trim();
+      state.settings.facility_name = document.getElementById('set-facility').value.trim();
+      saveState();
+      render();
+      showToast('success', 'Settings saved.');
+    }
+
+    function addMaterialForm(e) {
+      e.preventDefault();
+      const name = document.getElementById('new-mat-name').value.trim().toUpperCase();
+      const code = document.getElementById('new-mat-code').value.trim().toUpperCase() || name.slice(0, 8);
+      const desc = document.getElementById('new-mat-desc').value.trim();
+      if (state.materials.some(m => m.name.toLowerCase() === name.toLowerCase())) { showToast('error', `Material "${name}" already exists.`); return; }
+      state.materials.push({ id: state.nextMatId++, name, code, description: desc });
+      addAudit('CREATE', 'MATERIAL', `Added material ${name} (${code})`);
+      saveState();
+      render();
+      showToast('success', `Added material ${name}.`);
+    }
+
+    function saveMaterialEdit(id) {
+      const name = document.getElementById('edit-mat-name').value.trim().toUpperCase();
+      const code = document.getElementById('edit-mat-code').value.trim().toUpperCase() || name.slice(0, 8);
+      const description = document.getElementById('edit-mat-desc').value.trim();
+      if (!name) return;
+      if (state.materials.some(m => m.name.toLowerCase() === name.toLowerCase() && m.id !== id)) { showToast('error', `Material "${name}" already exists.`); return; }
+      const old = state.materials.find(m => m.id === id);
+      if (old.name !== name) {
+        state.transactions = state.transactions.map(t => t.material_name === old.name ? { ...t, material_name: name } : t);
+      }
+      state.materials = state.materials.map(m => m.id === id ? { ...m, name, code, description } : m);
+      addAudit('UPDATE', 'MATERIAL', `Updated material ${old.name} -> ${name}`);
+      editingMatId = null;
+      saveState();
+      render();
+      showToast('success', `Updated material ${name}.`);
+    }
+
+    function deleteMaterial(id) {
+      const mat = state.materials.find(m => m.id === id);
+      const used = state.transactions.filter(t => t.material_name === mat.name).length;
+      if (used > 0) { showToast('error', `Cannot delete "${mat.name}" because ${used} transaction(s) reference it.`); return; }
+      if (!confirm(`Delete material "${mat.name}" permanently?`)) return;
+      state.materials = state.materials.filter(m => m.id !== id);
+      addAudit('DELETE', 'MATERIAL', `Deleted material ${mat.name}`);
+      saveState();
+      render();
+      showToast('success', `Deleted material ${mat.name}.`);
+    }
+
+    function exportRegisterCSV(mode) {
+      const rows = state.transactions.filter(tx => mode === 'HISTORY' ? true : tx.type === mode);
+      const header = ['Date', 'Transaction ID', 'Type', 'Tank', 'Material', 'Qty (KG)', 'Qty (MT)', 'Reference', 'Party', 'Vehicle', 'Remarks'];
+      const lines = [header.join(','), ...rows.map(r => {
+        const tn = state.tanks.find(t => t.id === r.tank_id)?.name || '';
+        return [r.tx_date, r.tx_code, r.type, tn, r.material_name, r.quantity_kg, r.quantity_mt, r.reference_number, r.party_name, r.vehicle_number, r.remarks]
+          .map(v => `"${String(v ?? '').replaceAll('"', '""')}"`).join(',');
+      })];
+      const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `${mode.toLowerCase()}_register.csv`;
+      a.click();
+    }
+
+    function resetDemoData() {
+      if (!confirm('Reset all tanks, transactions, and settings back to initial defaults?')) return;
+      state = createSeedState();
+      saveState();
+      render();
+      showToast('success', 'Reset to default inventory data.');
+    }
+
+    render();
+  </script>
+</body>
+</html>
