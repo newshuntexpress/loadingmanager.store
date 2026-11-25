@@ -4,6 +4,11 @@
   "version": "1.0.0",
   "type": "module",
   "main": "server.ts",
+  "homepage": "https://loadingmanager.store",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/newshuntexpress/loadingmanager.store.git"
+  },
   "engines": {
     "node": ">=22.0.0"
   },

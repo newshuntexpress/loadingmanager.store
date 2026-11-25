@@ -6,13 +6,13 @@ BRANCH="${GIT_BRANCH:-main}"
 
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   echo "Error: Git repository is not initialized yet."
-  echo "Run: git init && git branch -M main && git remote add origin <YOUR_GITHUB_REPO_URL>"
+  echo "Run: git init && git branch -M main && git remote add origin https://github.com/newshuntexpress/loadingmanager.store.git"
   exit 1
 fi
 
 if ! git remote get-url origin >/dev/null 2>&1; then
   echo "Error: Git remote 'origin' is not configured."
-  echo "Run: git remote add origin <YOUR_GITHUB_REPO_URL>"
+  echo "Run: git remote add origin https://github.com/newshuntexpress/loadingmanager.store.git"
   exit 1
 fi
 

@@ -17,7 +17,7 @@ git init
 git add .
 git commit -m "Initial commit: GatePass & Loading Slip Manager"
 git branch -M main
-git remote add origin https://github.com/newshuntexpress/loadingmanager.git
+git remote add origin https://github.com/newshuntexpress/loadingmanager.store.git
 git push -u origin main
 ```
 
@@ -62,7 +62,7 @@ curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
 sudo apt-get install -y nodejs git build-essential python3
 
 # 2. Clone from GitHub
-git clone https://github.com/newshuntexpress/loadingmanager.git /var/www/gatepass
+git clone https://github.com/newshuntexpress/loadingmanager.store.git /var/www/gatepass
 cd /var/www/gatepass
 
 # 3. Install dependencies & build frontend
