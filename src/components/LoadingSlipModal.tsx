@@ -25,6 +25,7 @@ import {
   Layers,
   CheckCircle2,
   Sparkles,
+  Loader2,
 } from 'lucide-react';
 
 export const PACK_DROPDOWN_OPTIONS = [
@@ -46,7 +47,7 @@ interface LoadingSlipModalProps {
   storeInchargeFullName?: string;
   storeInchargeSignatureDataUrl?: string;
   isExFactory?: boolean;
-  onSave: (updatedTicket: TicketRecord, openPrintDirectly?: boolean) => void;
+  onSave: (updatedTicket: TicketRecord, openPrintDirectly?: boolean) => Promise<void> | void;
   onClose: () => void;
 }
 
@@ -123,8 +124,12 @@ export const LoadingSlipModal: React.FC<LoadingSlipModalProps> = ({
   const [checkedBy, setCheckedBy] = useState<string>(existingSlip?.checkedBy || '');
   const [markCompleteOnSave, setMarkCompleteOnSave] = useState<boolean>(false);
   const [validationError, setValidationError] = useState<string | null>(null);
+  const [saving, setSaving] = useState<boolean>(false);
+  const [pendingAction, setPendingAction] = useState<'save' | 'print' | null>(null);
   const [qrDataUrl, setQrDataUrl] = useState<string>('');
   const [qrEnlarged, setQrEnlarged] = useState<boolean>(false);
+  const delNoteInputRef = useRef<HTMLInputElement | null>(null);
+  const placeNameInputRef = useRef<HTMLInputElement | null>(null);
 
   // Material Master catalog hydration (falls back to StorageService cache and live fetch if empty)
   const [localMaterials, setLocalMaterials] = useState<MaterialMasterRecord[]>(() =>
@@ -475,19 +480,24 @@ export const LoadingSlipModal: React.FC<LoadingSlipModalProps> = ({
     };
   };
 
-  const handleSaveOnly = (printDirectly = false) => {
+  const handleSaveOnly = async (printDirectly = false) => {
+    if (saving) return;
     if (isSlipLocked) {
       if (printDirectly) {
-        onSave(ticket, true);
+        await onSave(ticket, true);
       }
       return;
     }
     if (!delNoteNumber.trim()) {
       setValidationError('Please enter Delivery Note / Challan Number!');
+      delNoteInputRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      delNoteInputRef.current?.focus();
       return;
     }
     if (!placeName.trim()) {
       setValidationError('Please enter Destination Place / Unloading Point!');
+      placeNameInputRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      placeNameInputRef.current?.focus();
       return;
     }
     setValidationError(null);
@@ -520,7 +530,16 @@ export const LoadingSlipModal: React.FC<LoadingSlipModalProps> = ({
       autoUnderLoadingAt: nowMs + delayMinutes * 60 * 1000,
     };
 
-    onSave(updatedTicket, printDirectly);
+    setSaving(true);
+    setPendingAction(printDirectly ? 'print' : 'save');
+    try {
+      await onSave(updatedTicket, printDirectly);
+    } catch (err: any) {
+      setValidationError(err?.message || 'Failed to save loading slip. Please try again.');
+    } finally {
+      setSaving(false);
+      setPendingAction(null);
+    }
   };
 
   return (
@@ -572,11 +591,17 @@ export const LoadingSlipModal: React.FC<LoadingSlipModalProps> = ({
                 Delivery Note Number (Del Note No.) *
               </label>
               <input
+                ref={delNoteInputRef}
                 type="text"
                 value={delNoteNumber}
-                onChange={(e) => setDelNoteNumber(e.target.value)}
+                onChange={(e) => {
+                  setDelNoteNumber(e.target.value);
+                  if (validationError) setValidationError(null);
+                }}
                 placeholder="e.g. AWZR-2026/0000000001"
-                className="w-full px-3 py-1.5 text-sm font-semibold rounded-lg border border-neutral-300 focus:ring-2 focus:ring-blue-500 focus:outline-none bg-white"
+                className={`w-full px-3 py-1.5 text-sm font-semibold rounded-lg border focus:ring-2 focus:ring-blue-500 focus:outline-none bg-white ${
+                  validationError && !delNoteNumber.trim() ? 'border-red-500 ring-2 ring-red-200' : 'border-neutral-300'
+                }`}
               />
             </div>
             <div>
@@ -584,11 +609,17 @@ export const LoadingSlipModal: React.FC<LoadingSlipModalProps> = ({
                 Destination Place / Unloading Point *
               </label>
               <input
+                ref={placeNameInputRef}
                 type="text"
                 value={placeName}
-                onChange={(e) => setPlaceName(e.target.value)}
+                onChange={(e) => {
+                  setPlaceName(e.target.value);
+                  if (validationError) setValidationError(null);
+                }}
                 placeholder="e.g. KSA"
-                className="w-full px-3 py-1.5 text-sm font-semibold rounded-lg border border-neutral-300 focus:ring-2 focus:ring-blue-500 focus:outline-none bg-white"
+                className={`w-full px-3 py-1.5 text-sm font-semibold rounded-lg border focus:ring-2 focus:ring-blue-500 focus:outline-none bg-white ${
+                  validationError && !placeName.trim() ? 'border-red-500 ring-2 ring-red-200' : 'border-neutral-300'
+                }`}
               />
             </div>
             <div>
@@ -769,12 +800,7 @@ export const LoadingSlipModal: React.FC<LoadingSlipModalProps> = ({
                                     applyMaterialToRow(index, selected);
                                   }
                                 } else if (e.key === 'Tab') {
-                                  const selected = activeSuggestions[highlightedIdx] || activeSuggestions[0];
-                                  if (selected && !isMatchedInMaster) {
-                                    applyMaterialToRow(index, selected);
-                                  } else {
-                                    setActiveDescRow(null);
-                                  }
+                                  setActiveDescRow(null);
                                 } else if (e.key === 'Escape') {
                                   setActiveDescRow(null);
                                 }
@@ -1115,7 +1141,8 @@ export const LoadingSlipModal: React.FC<LoadingSlipModalProps> = ({
             <button
               type="button"
               onClick={onClose}
-              className="app-btn w-full sm:w-auto sm:min-w-[110px] text-neutral-700 bg-neutral-100 hover:bg-neutral-200 border border-neutral-300"
+              disabled={saving}
+              className="app-btn w-full sm:w-auto sm:min-w-[110px] text-neutral-700 bg-neutral-100 hover:bg-neutral-200 border border-neutral-300 disabled:opacity-50"
             >
               Cancel
             </button>
@@ -1124,21 +1151,37 @@ export const LoadingSlipModal: React.FC<LoadingSlipModalProps> = ({
               {!isSlipLocked && (
                 <button
                   type="button"
-                  onClick={() => handleSaveOnly(false)}
-                  className="app-btn w-full bg-neutral-800 hover:bg-neutral-900 text-white shadow"
+                  disabled={saving}
+                  onClick={() => void handleSaveOnly(false)}
+                  className="app-btn w-full bg-neutral-800 hover:bg-neutral-900 text-white shadow disabled:opacity-60"
                 >
-                  <Save className="w-4 h-4 shrink-0" />
-                  <span>Save Loading Slip</span>
+                  {saving && pendingAction === 'save' ? (
+                    <Loader2 className="w-4 h-4 shrink-0 animate-spin" />
+                  ) : (
+                    <Save className="w-4 h-4 shrink-0" />
+                  )}
+                  <span>{saving && pendingAction === 'save' ? 'Saving...' : 'Save Loading Slip'}</span>
                 </button>
               )}
 
               <button
                 type="button"
-                onClick={() => handleSaveOnly(true)}
-                className="app-btn w-full bg-blue-700 hover:bg-blue-600 text-white shadow-lg shadow-blue-700/30"
+                disabled={saving}
+                onClick={() => void handleSaveOnly(true)}
+                className="app-btn w-full bg-blue-700 hover:bg-blue-600 text-white shadow-lg shadow-blue-700/30 disabled:opacity-60"
               >
-                <Printer className="w-4 h-4 shrink-0" />
-                <span>{isSlipLocked ? 'Print 2-Copy A4' : 'Save & Print 2-Copy A4'}</span>
+                {saving && pendingAction === 'print' ? (
+                  <Loader2 className="w-4 h-4 shrink-0 animate-spin" />
+                ) : (
+                  <Printer className="w-4 h-4 shrink-0" />
+                )}
+                <span>
+                  {isSlipLocked
+                    ? 'Print 2-Copy A4'
+                    : saving && pendingAction === 'print'
+                    ? 'Saving & Printing...'
+                    : 'Save & Print 2-Copy A4'}
+                </span>
               </button>
             </div>
           </div>

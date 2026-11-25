@@ -3,6 +3,7 @@ import { jsPDF } from 'jspdf';
 import { AuthUser, CompanySettings, DriverMasterRecord, ExFactoryEntry, TicketRecord, TruckLoadingType } from '../types';
 import { ApiClient, withBackgroundPoll } from '../services/api';
 import { StorageService, formatDisplayDate, getTodayDateString } from '../services/storage';
+import { importMaterialsBatchToFirestore } from '../services/firestoreData';
 import { drawPdfLogo } from '../utils/logo';
 import { resolveLoadingType } from '../utils/loadingType';
 import { LoadingSlipModal } from './LoadingSlipModal';
@@ -28,6 +29,7 @@ import {
   Printer,
   MapPin,
   Globe,
+  ArrowLeftRight,
 } from 'lucide-react';
 
 interface ExFactoryViewProps {
@@ -432,6 +434,8 @@ export const ExFactoryView: React.FC<ExFactoryViewProps> = ({
     await saveEntryCore(false);
   };
 
+  const [autoPrintExSlip, setAutoPrintExSlip] = useState(false);
+
   const handleSaveExFactoryLoadingSlip = async (
     updatedTicket: TicketRecord,
     openPrintDirectly?: boolean
@@ -450,6 +454,7 @@ export const ExFactoryView: React.FC<ExFactoryViewProps> = ({
       );
       if (autoSavedMaterials && autoSavedMaterials.length > 0) {
         StorageService.mergeMaterialsCache(autoSavedMaterials);
+        void importMaterialsBatchToFirestore(autoSavedMaterials).catch(() => {});
       }
       setEntries((prev) => prev.map((item) => (item.id === updatedEntry.id ? updatedEntry : item)));
       setLastSavedEntry((prev) => (prev?.id === updatedEntry.id ? updatedEntry : prev));
@@ -465,10 +470,12 @@ export const ExFactoryView: React.FC<ExFactoryViewProps> = ({
         `Loading Slip saved for ${updatedEntry.delNoteNumber} (${updatedEntry.loadingSlip?.totalQty || 0} Qty · ${updatedEntry.loadingSlip?.totalPallets || 0} Pallets)${autoSavedSuffix}`
       );
       if (openPrintDirectly) {
+        setAutoPrintExSlip(true);
         setActiveEntryForPrintSlip({ entry: updatedEntry, srNo: targetSrNo });
       }
     } catch (err: any) {
       showToast('error', err?.message || 'Failed to save Ex-Factory Loading Slip.');
+      throw err;
     }
   };
 
@@ -550,7 +557,30 @@ export const ExFactoryView: React.FC<ExFactoryViewProps> = ({
       ).length,
     [filteredEntries]
   );
-  const exportFilteredCount = filteredEntries.length - localFilteredCount;
+  const exportFilteredCount = useMemo(
+    () =>
+      filteredEntries.filter(
+        (e) =>
+          resolveLoadingType({
+            loadingType: e.loadingType,
+            destinationPlace: e.loadingSlip?.placeName,
+            placeName: e.customerName,
+          }) === 'export'
+      ).length,
+    [filteredEntries]
+  );
+  const stoFilteredCount = useMemo(
+    () =>
+      filteredEntries.filter(
+        (e) =>
+          resolveLoadingType({
+            loadingType: e.loadingType,
+            destinationPlace: e.loadingSlip?.placeName,
+            placeName: e.customerName,
+          }) === 'sto'
+      ).length,
+    [filteredEntries]
+  );
   const uniqueCustomersCount = useMemo(
     () => new Set(filteredEntries.map((e) => e.customerName.trim().toUpperCase())).size,
     [filteredEntries]
@@ -924,7 +954,7 @@ export const ExFactoryView: React.FC<ExFactoryViewProps> = ({
             {filteredEntries.length}
           </div>
           <div className="text-[11px] font-bold text-[#5B738B] mt-0.5">
-            Local: {localFilteredCount} · Export: {exportFilteredCount}
+            Local: {localFilteredCount} · Export: {exportFilteredCount} · STO: {stoFilteredCount}
           </div>
         </div>
         <div className="surface-3d surface-3d-hover rounded-2xl p-5">
@@ -1020,14 +1050,14 @@ export const ExFactoryView: React.FC<ExFactoryViewProps> = ({
               />
             </div>
 
-            {/* Loading Type (Local / Export) */}
+            {/* Loading Type (Local / Export / STO) */}
             <div>
               <label className="block text-xs font-bold text-[#354A5F] mb-1">Loading Type *</label>
-              <div className="grid grid-cols-2 gap-1 bg-[#EFF4F9] p-1 rounded-lg border border-[#BCC8D4]">
+              <div className="grid grid-cols-3 gap-1 bg-[#EFF4F9] p-1 rounded-lg border border-[#BCC8D4]">
                 <button
                   type="button"
                   onClick={() => setLoadingType('local')}
-                  className={`py-1.5 px-2 rounded text-xs font-extrabold flex items-center justify-center gap-1 transition cursor-pointer ${
+                  className={`py-1.5 px-1.5 rounded text-xs font-extrabold flex items-center justify-center gap-1 transition cursor-pointer ${
                     loadingType === 'local'
                       ? 'bg-[#107E3E] text-white shadow-xs'
                       : 'text-[#354A5F] hover:bg-white'
@@ -1039,7 +1069,7 @@ export const ExFactoryView: React.FC<ExFactoryViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setLoadingType('export')}
-                  className={`py-1.5 px-2 rounded text-xs font-extrabold flex items-center justify-center gap-1 transition cursor-pointer ${
+                  className={`py-1.5 px-1.5 rounded text-xs font-extrabold flex items-center justify-center gap-1 transition cursor-pointer ${
                     loadingType === 'export'
                       ? 'bg-indigo-600 text-white shadow-xs'
                       : 'text-[#354A5F] hover:bg-white'
@@ -1047,6 +1077,18 @@ export const ExFactoryView: React.FC<ExFactoryViewProps> = ({
                 >
                   <Globe className="w-3 h-3 shrink-0" />
                   <span>Export</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLoadingType('sto')}
+                  className={`py-1.5 px-1.5 rounded text-xs font-extrabold flex items-center justify-center gap-1 transition cursor-pointer ${
+                    loadingType === 'sto'
+                      ? 'bg-amber-600 text-white shadow-xs'
+                      : 'text-[#354A5F] hover:bg-white'
+                  }`}
+                >
+                  <ArrowLeftRight className="w-3 h-3 shrink-0" />
+                  <span>STO</span>
                 </button>
               </div>
             </div>
@@ -1461,10 +1503,12 @@ export const ExFactoryView: React.FC<ExFactoryViewProps> = ({
                                 className={`px-1.5 py-0.5 rounded text-[9.5px] font-black uppercase border ${
                                   lType === 'export'
                                     ? 'bg-indigo-50 text-indigo-800 border-indigo-200'
+                                    : lType === 'sto'
+                                    ? 'bg-amber-50 text-amber-800 border-amber-200'
                                     : 'bg-emerald-50 text-emerald-800 border-emerald-200'
                                 }`}
                               >
-                                {lType === 'export' ? 'Export' : 'Local'}
+                                {lType === 'export' ? 'Export' : lType === 'sto' ? 'STO' : 'Local'}
                               </span>
                             );
                           })()}
@@ -1653,7 +1697,11 @@ export const ExFactoryView: React.FC<ExFactoryViewProps> = ({
           currentUserId={currentUser.id}
           storeInchargeFullName={currentUser.fullName}
           storeInchargeSignatureDataUrl={currentUser.signatureDataUrl}
-          onClose={() => setActiveEntryForPrintSlip(null)}
+          autoPrint={autoPrintExSlip}
+          onClose={() => {
+            setAutoPrintExSlip(false);
+            setActiveEntryForPrintSlip(null);
+          }}
         />
       )}
 

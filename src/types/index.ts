@@ -1,5 +1,5 @@
 export type TruckStatus = 'waiting' | 'called' | 'under_loading' | 'completed' | 'cancelled';
-export type TruckLoadingType = 'local' | 'export';
+export type TruckLoadingType = 'local' | 'export' | 'sto';
 
 export interface LoadingSlipItem {
   srNo: number;
@@ -66,7 +66,7 @@ export interface TicketRecord {
   iqamaNumber?: string;       // ID / Iqama Number
   transporterName: string;
   destinationPlace: string;   // Place / destination name
-  loadingType?: TruckLoadingType; // 'local' | 'export'
+  loadingType?: TruckLoadingType; // 'local' | 'export' | 'sto'
   delNoteNumber?: string;     // e.g. "A1DD00001" (Mandatory for ticket creation)
   status: TruckStatus;
   loadingSlip?: LoadingSlipData;

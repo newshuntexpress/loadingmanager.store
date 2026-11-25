@@ -18,6 +18,7 @@ import {
   X,
   MapPin,
   Globe,
+  ArrowLeftRight,
 } from 'lucide-react';
 
 interface GateQueueDashboardProps {
@@ -141,7 +142,7 @@ export const GateQueueDashboard: React.FC<GateQueueDashboardProps> = ({
   canPrint = true,
 }) => {
   const [showCancelledModal, setShowCancelledModal] = useState(false);
-  const [truckBreakdownFilter, setTruckBreakdownFilter] = useState<'all' | 'local' | 'export' | null>(null);
+  const [truckBreakdownFilter, setTruckBreakdownFilter] = useState<'all' | 'local' | 'export' | 'sto' | null>(null);
 
   const dayTickets = tickets.filter((t) => t.date === date);
 
@@ -155,15 +156,20 @@ export const GateQueueDashboard: React.FC<GateQueueDashboardProps> = ({
   const loadingScopeTickets = dayTickets.filter((t) => t.status !== 'cancelled');
   const localLoadingTickets = loadingScopeTickets.filter((t) => resolveLoadingType(t) === 'local');
   const exportLoadingTickets = loadingScopeTickets.filter((t) => resolveLoadingType(t) === 'export');
+  const stoLoadingTickets = loadingScopeTickets.filter((t) => resolveLoadingType(t) === 'sto');
   const localCompletedCount = localLoadingTickets.filter((t) => t.status === 'completed').length;
   const exportCompletedCount = exportLoadingTickets.filter((t) => t.status === 'completed').length;
+  const stoCompletedCount = stoLoadingTickets.filter((t) => t.status === 'completed').length;
   const localActiveCount = localLoadingTickets.length - localCompletedCount;
   const exportActiveCount = exportLoadingTickets.length - exportCompletedCount;
+  const stoActiveCount = stoLoadingTickets.length - stoCompletedCount;
   const modalBreakdownTickets =
     truckBreakdownFilter === 'local'
       ? localLoadingTickets
       : truckBreakdownFilter === 'export'
       ? exportLoadingTickets
+      : truckBreakdownFilter === 'sto'
+      ? stoLoadingTickets
       : loadingScopeTickets;
 
   const processedTickets = dayTickets.filter((t) => t.status === 'completed');
@@ -326,14 +332,14 @@ export const GateQueueDashboard: React.FC<GateQueueDashboardProps> = ({
         </div>
       </div>
 
-      {/* Total Number of Truck Loading — Local & Export Summary Panel */}
+      {/* Total Number of Truck Loading — Local, Export & STO Summary Panel */}
       <div className="surface-3d rounded-2xl overflow-hidden">
-        <div className="h-1 w-full bg-gradient-to-r from-[#107E3E] via-[#0A6ED1] to-[#4338CA]" />
-        <div className="px-5 py-3.5 grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-[#D9E3EE] gap-3 md:gap-0">
+        <div className="h-1 w-full bg-gradient-to-r from-[#107E3E] via-[#4338CA] to-[#D97706]" />
+        <div className="px-5 py-3.5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 divide-y lg:divide-y-0 lg:divide-x divide-[#D9E3EE] gap-3 lg:gap-0">
           <button
             type="button"
             onClick={() => setTruckBreakdownFilter('all')}
-            className="flex items-center justify-between md:pr-6 py-1 md:py-0 text-left hover:bg-[#F4F8FC] rounded-xl px-2 -mx-2 transition cursor-pointer"
+            className="flex items-center justify-between lg:pr-5 py-1 lg:py-0 text-left hover:bg-[#F4F8FC] rounded-xl px-2 -mx-2 transition cursor-pointer"
             title="Click to view all loading trucks"
           >
             <div className="flex items-center gap-3">
@@ -357,7 +363,7 @@ export const GateQueueDashboard: React.FC<GateQueueDashboardProps> = ({
           <button
             type="button"
             onClick={() => setTruckBreakdownFilter('local')}
-            className="flex items-center justify-between md:px-6 py-1 md:py-0 text-left hover:bg-[#F1FDF6] rounded-xl px-2 -mx-2 md:mx-0 transition cursor-pointer"
+            className="flex items-center justify-between lg:px-5 py-1 lg:py-0 text-left hover:bg-[#F1FDF6] rounded-xl px-2 -mx-2 lg:mx-0 transition cursor-pointer"
             title="Click to view Local loading trucks"
           >
             <div className="flex items-center gap-3">
@@ -384,7 +390,7 @@ export const GateQueueDashboard: React.FC<GateQueueDashboardProps> = ({
           <button
             type="button"
             onClick={() => setTruckBreakdownFilter('export')}
-            className="flex items-center justify-between md:pl-6 py-1 md:py-0 text-left hover:bg-[#EEF2FF] rounded-xl px-2 -mx-2 md:mx-0 transition cursor-pointer"
+            className="flex items-center justify-between lg:px-5 py-1 lg:py-0 text-left hover:bg-[#EEF2FF] rounded-xl px-2 -mx-2 lg:mx-0 transition cursor-pointer"
             title="Click to view Export loading trucks"
           >
             <div className="flex items-center gap-3">
@@ -405,6 +411,33 @@ export const GateQueueDashboard: React.FC<GateQueueDashboardProps> = ({
             </div>
             <span className="text-3xl font-black text-[#4338CA] tabular-nums">
               {exportLoadingTickets.length}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setTruckBreakdownFilter('sto')}
+            className="flex items-center justify-between lg:pl-5 py-1 lg:py-0 text-left hover:bg-[#FFFBEB] rounded-xl px-2 -mx-2 lg:mx-0 transition cursor-pointer"
+            title="Click to view STO loading trucks"
+          >
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 rounded-xl bg-gradient-to-b from-[#FFFBEB] to-[#FDE68A] text-[#B45309] border border-[#FCD34D] shadow-[inset_0_1px_0_rgba(255,255,255,0.85),0_3px_0_#F59E0B]">
+                <ArrowLeftRight className="w-5 h-5" />
+              </div>
+              <div>
+                <span className="text-xs font-extrabold text-[#92400E] uppercase tracking-wide block">
+                  STO Truck Loading
+                </span>
+                <span className="text-xs text-[#5B738B]">
+                  {stoActiveCount} active · {stoCompletedCount} done
+                  {loadingScopeTickets.length > 0
+                    ? ` (${Math.round((stoLoadingTickets.length / loadingScopeTickets.length) * 100)}%)`
+                    : ''}
+                </span>
+              </div>
+            </div>
+            <span className="text-3xl font-black text-[#B45309] tabular-nums">
+              {stoLoadingTickets.length}
             </span>
           </button>
         </div>
@@ -736,7 +769,7 @@ export const GateQueueDashboard: React.FC<GateQueueDashboardProps> = ({
         </div>
       )}
 
-      {/* Local / Export / Total Truck Loading Drilldown Modal */}
+      {/* Local / Export / STO / Total Truck Loading Drilldown Modal */}
       {truckBreakdownFilter && (
         <div className="fixed inset-0 z-50 overflow-y-auto bg-black/65 backdrop-blur-sm flex items-center justify-center p-3 sm:p-5">
           <div className="surface-3d bg-white rounded-2xl w-full max-w-3xl overflow-hidden border border-[#C6D4E3]">
@@ -745,6 +778,8 @@ export const GateQueueDashboard: React.FC<GateQueueDashboardProps> = ({
                 <div className="p-2 bg-white/15 rounded-xl border border-white/25">
                   {truckBreakdownFilter === 'export' ? (
                     <Globe className="w-5 h-5 text-[#A5B4FC]" />
+                  ) : truckBreakdownFilter === 'sto' ? (
+                    <ArrowLeftRight className="w-5 h-5 text-[#FCD34D]" />
                   ) : truckBreakdownFilter === 'local' ? (
                     <MapPin className="w-5 h-5 text-[#68D391]" />
                   ) : (
@@ -757,10 +792,12 @@ export const GateQueueDashboard: React.FC<GateQueueDashboardProps> = ({
                       ? `Local Truck Loading (${localLoadingTickets.length})`
                       : truckBreakdownFilter === 'export'
                       ? `Export Truck Loading (${exportLoadingTickets.length})`
+                      : truckBreakdownFilter === 'sto'
+                      ? `STO Truck Loading (${stoLoadingTickets.length})`
                       : `Total Truck Loading (${loadingScopeTickets.length})`}
                   </h3>
                   <p className="text-xs text-[#DCE7F2]">
-                    {date} · Local: {localLoadingTickets.length} | Export: {exportLoadingTickets.length}
+                    {date} · Local: {localLoadingTickets.length} | Export: {exportLoadingTickets.length} | STO: {stoLoadingTickets.length}
                   </p>
                 </div>
               </div>
@@ -808,6 +845,17 @@ export const GateQueueDashboard: React.FC<GateQueueDashboardProps> = ({
               >
                 Export ({exportLoadingTickets.length})
               </button>
+              <button
+                type="button"
+                onClick={() => setTruckBreakdownFilter('sto')}
+                className={`app-btn-sm ${
+                  truckBreakdownFilter === 'sto'
+                    ? 'bg-[#D97706] text-white'
+                    : 'bg-white text-[#B45309] border border-[#FCD34D]'
+                }`}
+              >
+                STO ({stoLoadingTickets.length})
+              </button>
             </div>
 
             <div className="p-4 sm:p-5 max-h-[62vh] overflow-y-auto space-y-2.5 bg-[#F8FAFC]">
@@ -842,10 +890,12 @@ export const GateQueueDashboard: React.FC<GateQueueDashboardProps> = ({
                             className={`text-[10px] font-black uppercase px-2 py-0.5 rounded border ${
                               lType === 'export'
                                 ? 'bg-indigo-50 text-indigo-800 border-indigo-200'
+                                : lType === 'sto'
+                                ? 'bg-amber-50 text-amber-800 border-amber-200'
                                 : 'bg-emerald-50 text-emerald-800 border-emerald-200'
                             }`}
                           >
-                            {lType === 'export' ? 'Export' : 'Local'}
+                            {lType === 'export' ? 'Export' : lType === 'sto' ? 'STO' : 'Local'}
                           </span>
                           {t.delNoteNumber && (
                             <span className="text-[11px] font-bold px-2 py-0.5 rounded bg-amber-50 text-amber-900 border border-amber-200 font-mono">

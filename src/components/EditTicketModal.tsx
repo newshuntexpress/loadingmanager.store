@@ -18,6 +18,7 @@ import {
   X,
   FileText,
   Globe,
+  ArrowLeftRight,
 } from 'lucide-react';
 
 interface EditTicketModalProps {
@@ -302,14 +303,14 @@ export const EditTicketModal: React.FC<EditTicketModalProps> = ({
               <label className="text-xs font-bold text-neutral-700 block mb-1">
                 Truck Loading Type *
               </label>
-              <div className="grid grid-cols-2 gap-1.5 bg-neutral-100 p-1 rounded-xl border border-neutral-300">
+              <div className="grid grid-cols-3 gap-1.5 bg-neutral-100 p-1 rounded-xl border border-neutral-300">
                 <button
                   type="button"
                   onClick={() => {
                     setLoadingType('local');
                     setLoadingTypeManual(true);
                   }}
-                  className={`py-1.5 px-2.5 rounded-lg text-xs font-extrabold transition flex items-center justify-center gap-1 cursor-pointer ${
+                  className={`py-1.5 px-2 rounded-lg text-xs font-extrabold transition flex items-center justify-center gap-1 cursor-pointer ${
                     loadingType === 'local'
                       ? 'bg-emerald-600 text-white shadow-xs'
                       : 'text-neutral-600 hover:text-neutral-900 hover:bg-white'
@@ -324,7 +325,7 @@ export const EditTicketModal: React.FC<EditTicketModalProps> = ({
                     setLoadingType('export');
                     setLoadingTypeManual(true);
                   }}
-                  className={`py-1.5 px-2.5 rounded-lg text-xs font-extrabold transition flex items-center justify-center gap-1 cursor-pointer ${
+                  className={`py-1.5 px-2 rounded-lg text-xs font-extrabold transition flex items-center justify-center gap-1 cursor-pointer ${
                     loadingType === 'export'
                       ? 'bg-indigo-600 text-white shadow-xs'
                       : 'text-neutral-600 hover:text-neutral-900 hover:bg-white'
@@ -332,6 +333,21 @@ export const EditTicketModal: React.FC<EditTicketModalProps> = ({
                 >
                   <Globe className="w-3.5 h-3.5 shrink-0" />
                   <span>Export</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLoadingType('sto');
+                    setLoadingTypeManual(true);
+                  }}
+                  className={`py-1.5 px-2 rounded-lg text-xs font-extrabold transition flex items-center justify-center gap-1 cursor-pointer ${
+                    loadingType === 'sto'
+                      ? 'bg-amber-600 text-white shadow-xs'
+                      : 'text-neutral-600 hover:text-neutral-900 hover:bg-white'
+                  }`}
+                >
+                  <ArrowLeftRight className="w-3.5 h-3.5 shrink-0" />
+                  <span>STO</span>
                 </button>
               </div>
             </div>

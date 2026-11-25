@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { TicketRecord, CompanySettings } from '../types';
 import { formatSaudiPhoneNumber } from '../utils/whatsapp';
@@ -13,6 +13,7 @@ interface LoadingSlipPrintViewProps {
   currentUserId?: string;
   storeInchargeFullName?: string;
   storeInchargeSignatureDataUrl?: string;
+  autoPrint?: boolean;
   onClose: () => void;
 }
 
@@ -22,6 +23,7 @@ export const LoadingSlipPrintView: React.FC<LoadingSlipPrintViewProps> = ({
   currentUserId,
   storeInchargeFullName,
   storeInchargeSignatureDataUrl,
+  autoPrint = false,
   onClose,
 }) => {
   const slip = ticket.loadingSlip;
@@ -52,15 +54,24 @@ export const LoadingSlipPrintView: React.FC<LoadingSlipPrintViewProps> = ({
   const [pdfNotice, setPdfNotice] = useState<string | null>(null);
   const liveStatusUrl = buildDriverLiveStatusUrl(ticket);
   const [qrDataUrl, setQrDataUrl] = useState<string>('');
+  const [qrResolved, setQrResolved] = useState<boolean>(false);
+  const autoPrintedRef = useRef<boolean>(false);
 
   useEffect(() => {
     let cancelled = false;
+    setQrResolved(false);
     generateQrPngDataUrl(liveStatusUrl, 360)
       .then((dataUrl) => {
-        if (!cancelled) setQrDataUrl(dataUrl);
+        if (!cancelled) {
+          setQrDataUrl(dataUrl);
+          setQrResolved(true);
+        }
       })
       .catch(() => {
-        if (!cancelled) setQrDataUrl('');
+        if (!cancelled) {
+          setQrDataUrl('');
+          setQrResolved(true);
+        }
       });
     return () => {
       cancelled = true;
@@ -73,7 +84,7 @@ export const LoadingSlipPrintView: React.FC<LoadingSlipPrintViewProps> = ({
     setTimeout(() => setPdfNotice(null), 5000);
   };
 
-  const handlePrint = () => {
+  const handlePrint = useCallback(() => {
     let printDialogOpened = false;
     const onBeforePrint = () => {
       printDialogOpened = true;
@@ -95,7 +106,16 @@ export const LoadingSlipPrintView: React.FC<LoadingSlipPrintViewProps> = ({
         setTimeout(() => setPdfNotice(null), 6000);
       }
     }, 250);
-  };
+  }, [ticket, settings, displayStoreInchargeName, displaySignatureDataUrl]);
+
+  useEffect(() => {
+    if (!autoPrint || autoPrintedRef.current || !qrResolved) return;
+    autoPrintedRef.current = true;
+    const timer = window.setTimeout(() => {
+      handlePrint();
+    }, 150);
+    return () => window.clearTimeout(timer);
+  }, [autoPrint, qrResolved, handlePrint]);
 
   const renderSingleCopy = (copyType: 'ORIGINAL (OFFICE USE)' | 'DUPLICATE (FOR FORKLIFT OPERATOR)') => (
     <div className="single-slip-copy border-2 border-black bg-white p-2.5 text-black flex flex-col justify-between text-[11px] leading-tight">

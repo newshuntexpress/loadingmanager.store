@@ -86,6 +86,17 @@ const LOCAL_KEYWORDS = [
   'KSA',
 ];
 
+const STO_KEYWORDS = [
+  'STO',
+  'STOCK TRANSFER',
+  'STOCK TRANSFER ORDER',
+  'BRANCH TRANSFER',
+  'WAREHOUSE TRANSFER',
+  'PLANT TRANSFER',
+  'DEPOT TRANSFER',
+  'INTERNAL TRANSFER',
+];
+
 function containsKeyword(haystack: string, keyword: string): boolean {
   const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp(`(^|[^A-Z0-9])${escaped}([^A-Z0-9]|$)`, 'i').test(haystack);
@@ -95,6 +106,9 @@ export function inferLoadingTypeFromDestination(destination?: string | null): Tr
   const upper = String(destination || '').trim().toUpperCase();
   if (!upper) return null;
 
+  for (const kw of STO_KEYWORDS) {
+    if (containsKeyword(upper, kw)) return 'sto';
+  }
   if (containsKeyword(upper, 'EXPORT')) return 'export';
   if (containsKeyword(upper, 'LOCAL')) return 'local';
 
@@ -117,6 +131,7 @@ export function resolveLoadingType(input?: {
   if (!input) return 'local';
 
   const explicit = String(input.loadingType || '').trim().toLowerCase();
+  if (explicit === 'sto') return 'sto';
   if (explicit === 'export') return 'export';
   if (explicit === 'local') return 'local';
 
@@ -130,5 +145,7 @@ export function resolveLoadingType(input?: {
 }
 
 export function getLoadingTypeLabel(type: TruckLoadingType): string {
-  return type === 'export' ? 'Export' : 'Local';
+  if (type === 'export') return 'Export';
+  if (type === 'sto') return 'STO';
+  return 'Local';
 }

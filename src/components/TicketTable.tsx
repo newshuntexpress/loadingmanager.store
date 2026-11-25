@@ -231,10 +231,12 @@ export const TicketTable: React.FC<TicketTableProps> = ({
                             className={`px-1.5 py-0.5 rounded text-[9.5px] font-black uppercase tracking-wide border ${
                               lType === 'export'
                                 ? 'bg-indigo-50 text-indigo-800 border-indigo-200'
+                                : lType === 'sto'
+                                ? 'bg-amber-50 text-amber-800 border-amber-200'
                                 : 'bg-emerald-50 text-emerald-800 border-emerald-200'
                             }`}
                           >
-                            {lType === 'export' ? 'Export' : 'Local'}
+                            {lType === 'export' ? 'Export' : lType === 'sto' ? 'STO' : 'Local'}
                           </span>
                         );
                       })()}

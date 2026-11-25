@@ -16,9 +16,10 @@ function trimStr(val: unknown): string {
   return String(val ?? '').trim();
 }
 
-export function normalizeLoadingType(val: unknown): 'local' | 'export' | undefined {
+export function normalizeLoadingType(val: unknown): 'local' | 'export' | 'sto' | undefined {
   const upper = upperStr(val);
   if (upper === 'EXPORT') return 'export';
+  if (upper === 'STO') return 'sto';
   if (upper === 'LOCAL') return 'local';
   return undefined;
 }

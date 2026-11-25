@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { TicketRecord, CompanySettings } from '../types';
 import { formatSaudiPhoneNumber } from '../utils/whatsapp';
@@ -9,11 +9,18 @@ import { Printer, Download, X, CheckCircle2, ShieldCheck } from 'lucide-react';
 interface TicketPrintViewProps {
   ticket: TicketRecord;
   settings: CompanySettings;
+  autoPrint?: boolean;
   onClose: () => void;
 }
 
-export const TicketPrintView: React.FC<TicketPrintViewProps> = ({ ticket, settings, onClose }) => {
+export const TicketPrintView: React.FC<TicketPrintViewProps> = ({
+  ticket,
+  settings,
+  autoPrint = false,
+  onClose,
+}) => {
   const [pdfNotice, setPdfNotice] = useState<string | null>(null);
+  const autoPrintedRef = useRef(false);
 
   const handleSavePDF = () => {
     generateGateTokenPDF(ticket, settings);
@@ -21,7 +28,7 @@ export const TicketPrintView: React.FC<TicketPrintViewProps> = ({ ticket, settin
     setTimeout(() => setPdfNotice(null), 4000);
   };
 
-  const handlePrint = () => {
+  const handlePrint = useCallback(() => {
     let printDialogOpened = false;
     const onBeforePrint = () => {
       printDialogOpened = true;
@@ -43,7 +50,16 @@ export const TicketPrintView: React.FC<TicketPrintViewProps> = ({ ticket, settin
         setTimeout(() => setPdfNotice(null), 5000);
       }
     }, 250);
-  };
+  }, [ticket, settings]);
+
+  useEffect(() => {
+    if (!autoPrint || autoPrintedRef.current) return;
+    autoPrintedRef.current = true;
+    const timer = window.setTimeout(() => {
+      handlePrint();
+    }, 150);
+    return () => window.clearTimeout(timer);
+  }, [autoPrint, handlePrint]);
 
   return createPortal(
     <div className="ticket-print-root fixed inset-0 z-50 overflow-y-auto bg-black/75 flex items-center justify-center p-4">

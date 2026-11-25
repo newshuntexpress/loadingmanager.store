@@ -22,6 +22,7 @@ import {
   Truck,
   MapPin,
   Globe,
+  ArrowLeftRight,
 } from 'lucide-react';
 
 interface DispatchDetailsViewProps {
@@ -145,7 +146,7 @@ export const DispatchDetailsView: React.FC<DispatchDetailsViewProps> = ({
   const [toDate, setToDate] = useState<string>(initialDate);
   const [selectedMaterial, setSelectedMaterial] = useState<string>('ALL');
   const [sourceFilter, setSourceFilter] = useState<'ALL' | 'MAIN' | 'EX_FACTORY'>('ALL');
-  const [loadingTypeFilter, setLoadingTypeFilter] = useState<'ALL' | 'local' | 'export'>('ALL');
+  const [loadingTypeFilter, setLoadingTypeFilter] = useState<'ALL' | 'local' | 'export' | 'sto'>('ALL');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [ratioOverrides, setRatioOverrides] = useState<Record<string, number>>({});
 
@@ -480,8 +481,10 @@ export const DispatchDetailsView: React.FC<DispatchDetailsViewProps> = ({
 
     let localTrucks = 0;
     let exportTrucks = 0;
+    let stoTrucks = 0;
     for (const t of slipSet.values()) {
       if (t === 'export') exportTrucks += 1;
+      else if (t === 'sto') stoTrucks += 1;
       else localTrucks += 1;
     }
 
@@ -500,6 +503,7 @@ export const DispatchDetailsView: React.FC<DispatchDetailsViewProps> = ({
       slipCount: slipSet.size,
       localTrucks,
       exportTrucks,
+      stoTrucks,
       totalQty,
       totalPallets,
       totalLooseRolls,
@@ -911,7 +915,7 @@ export const DispatchDetailsView: React.FC<DispatchDetailsViewProps> = ({
     // Summary Mode: Material-Wise Dispatch Totals
     let y = drawBanner(
       'DISPATCH DETAILS — MATERIAL-WISE DISPATCH SUMMARY',
-      `Trucks: ${grandTotals.slipCount} (Local: ${grandTotals.localTrucks} | Export: ${grandTotals.exportTrucks})`
+      `Trucks: ${grandTotals.slipCount} (Local: ${grandTotals.localTrucks} | Export: ${grandTotals.exportTrucks} | STO: ${grandTotals.stoTrucks})`
     );
     const sumCols = [
       { label: 'Sr.', w: 11 },
@@ -1177,16 +1181,17 @@ export const DispatchDetailsView: React.FC<DispatchDetailsViewProps> = ({
               </select>
             )}
 
-            {/* Local / Export Filter */}
+            {/* Local / Export / STO Filter */}
             <select
               value={loadingTypeFilter}
-              onChange={(e) => setLoadingTypeFilter(e.target.value as 'ALL' | 'local' | 'export')}
-              aria-label="Filter by Loading Type (Local / Export)"
+              onChange={(e) => setLoadingTypeFilter(e.target.value as 'ALL' | 'local' | 'export' | 'sto')}
+              aria-label="Filter by Loading Type (Local / Export / STO)"
               className="inset-3d h-9 text-xs font-bold px-2.5 rounded-lg border border-[#C2D0DF] bg-[#F4F8FC] text-[#1C2833] focus:outline-none focus:ring-2 focus:ring-[#0A6ED1] cursor-pointer"
             >
-              <option value="ALL">All Loading Types (Local + Export)</option>
+              <option value="ALL">All Loading Types (Local + Export + STO)</option>
               <option value="local">Local Only</option>
               <option value="export">Export Only</option>
+              <option value="sto">STO Only</option>
             </select>
 
             {/* Text Search */}
@@ -1231,9 +1236,9 @@ export const DispatchDetailsView: React.FC<DispatchDetailsViewProps> = ({
         </div>
       </div>
 
-      {/* Total Truck Loading Breakdown: Local & Export */}
-      <div className="surface-3d rounded-2xl p-3.5 sm:p-4 grid grid-cols-1 sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-[#D9E3EE] gap-3 sm:gap-0">
-        <div className="flex items-center justify-between sm:pr-5">
+      {/* Total Truck Loading Breakdown: Local, Export & STO */}
+      <div className="surface-3d rounded-2xl p-3.5 sm:p-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 divide-y lg:divide-y-0 lg:divide-x divide-[#D9E3EE] gap-3 lg:gap-0">
+        <div className="flex items-center justify-between lg:pr-5">
           <div className="flex items-center gap-2.5">
             <div className="p-2 rounded-xl bg-[#EFF4F9] text-[#354A5F] border border-[#C6D4E3]">
               <Truck className="w-4 h-4" />
@@ -1248,7 +1253,7 @@ export const DispatchDetailsView: React.FC<DispatchDetailsViewProps> = ({
           <span className="text-2xl font-black text-[#1C2833] tabular-nums">{grandTotals.slipCount}</span>
         </div>
 
-        <div className="flex items-center justify-between sm:px-5 pt-2 sm:pt-0">
+        <div className="flex items-center justify-between lg:px-5 pt-2 lg:pt-0">
           <div className="flex items-center gap-2.5">
             <div className="p-2 rounded-xl bg-emerald-50 text-emerald-700 border border-emerald-200">
               <MapPin className="w-4 h-4" />
@@ -1263,7 +1268,7 @@ export const DispatchDetailsView: React.FC<DispatchDetailsViewProps> = ({
           <span className="text-2xl font-black text-emerald-700 tabular-nums">{grandTotals.localTrucks}</span>
         </div>
 
-        <div className="flex items-center justify-between sm:pl-5 pt-2 sm:pt-0">
+        <div className="flex items-center justify-between lg:px-5 pt-2 lg:pt-0">
           <div className="flex items-center gap-2.5">
             <div className="p-2 rounded-xl bg-indigo-50 text-indigo-700 border border-indigo-200">
               <Globe className="w-4 h-4" />
@@ -1276,6 +1281,21 @@ export const DispatchDetailsView: React.FC<DispatchDetailsViewProps> = ({
             </div>
           </div>
           <span className="text-2xl font-black text-indigo-700 tabular-nums">{grandTotals.exportTrucks}</span>
+        </div>
+
+        <div className="flex items-center justify-between lg:pl-5 pt-2 lg:pt-0">
+          <div className="flex items-center gap-2.5">
+            <div className="p-2 rounded-xl bg-amber-50 text-amber-700 border border-amber-200">
+              <ArrowLeftRight className="w-4 h-4" />
+            </div>
+            <div>
+              <span className="text-[11px] font-extrabold text-amber-800 uppercase tracking-wider block">
+                STO Trucks
+              </span>
+              <span className="text-[11px] text-[#5B738B]">Stock transfer order</span>
+            </div>
+          </div>
+          <span className="text-2xl font-black text-amber-700 tabular-nums">{grandTotals.stoTrucks}</span>
         </div>
       </div>
 

@@ -24,6 +24,7 @@ import {
   Lock,
   ArrowUpDown,
   AlertTriangle,
+  ArrowLeftRight,
 } from 'lucide-react';
 
 interface SecurityGuardViewProps {
@@ -36,6 +37,188 @@ interface SecurityGuardViewProps {
 }
 
 type StatusScopeFilter = 'ACTIVE' | 'ALL' | 'under_loading' | 'called' | 'waiting' | 'completed';
+type GuardLanguage = 'en' | 'ar';
+
+const GUARD_LANG_STORAGE_KEY = 'gp_guard_lang';
+
+const GUARD_TEXT = {
+  en: {
+    title: 'Security Guard — Gate Truck Allotment Monitor',
+    liveBadge: 'LIVE (10s)',
+    readOnlyBadge: 'Read-Only Checkpost',
+    subtitlePrefix: 'Live gate-wise count & truck list allotted for loading',
+    selectDateAria: 'Select Guard Monitor Date',
+    today: 'Today',
+    refresh: 'Refresh',
+    refreshTitle: 'Refresh Gate Allotment Now',
+    fullscreenOpen: 'Full-Screen Booth',
+    fullscreenExit: 'Exit Fullscreen',
+    fullscreenOpenTitle: 'Open Full-Screen Gate Booth Display',
+    fullscreenExitTitle: 'Exit Full-Screen Gate Display',
+    langSwitchAria: 'Security Guard Display Language',
+    kpiActiveTitle: 'Active Allotted',
+    kpiActiveSub: 'Loading + Called + Waiting',
+    kpiLoadingTitle: 'Under Loading',
+    kpiLoadingSub: 'Currently Inside Gates',
+    kpiCalledTitle: 'Called to Gate',
+    kpiCalledSub: 'Entry Clearance Given',
+    kpiWaitingTitle: 'Waiting Queue',
+    kpiWaitingSub: 'Waiting Outside Gate',
+    kpiCompletedTitle: 'Completed Today',
+    kpiCompletedSub: 'Total Day Allotted:',
+    gateGlanceTitle: 'Gate-Wise Allotment Count (Click a Gate to Focus)',
+    showAllGates: 'Show All Gates',
+    allottedOne: '1 Truck Allotted',
+    allottedMany: (n: number) => `${n} Trucks Allotted`,
+    shortLoad: 'Load',
+    shortCall: 'Call',
+    shortWait: 'Wait',
+    shortDone: 'Done',
+    urgentLabel: 'Urgent',
+    searchPlaceholder: 'Search Truck No., Del Note, Driver, Place...',
+    clearSearchTitle: 'Clear search',
+    filterGateAria: 'Filter by Gate',
+    allGates: 'All Gates',
+    filterStatusAria: 'Filter by Allotment Status',
+    statusActiveOnly: 'Active Allotted Only (Loading + Called + Waiting)',
+    statusAll: 'All Statuses (Incl. Completed)',
+    statusUnderLoading: 'Under Loading Only',
+    statusCalled: 'Called to Gate Only',
+    statusWaiting: 'Waiting in Queue Only',
+    statusCompleted: 'Completed Only',
+    filterTypeAria: 'Filter by Loading Type',
+    typeAll: 'All Types (Local, Export & STO)',
+    typeLocal: 'Local Only',
+    typeExport: 'Export Only',
+    typeSto: 'STO Only',
+    autoSortLabel: 'Auto-Sort: Gate Priority (Urgent First) → Arrival Time',
+    autoSortTitle:
+      'Each gate queue automatically places Urgent Gate Priority trucks first, then orders by earliest Arrival Time',
+    gateStateLoading: 'LOADING ACTIVE',
+    gateStateCalled: 'TRUCK CALLED',
+    gateStateWaiting: 'QUEUE WAITING',
+    gateStateClear: 'GATE CLEAR',
+    detailLoading: 'Loading',
+    detailCalled: 'Called',
+    detailWaiting: 'Waiting',
+    detailDone: 'Done',
+    allottedActive: 'Allotted Active',
+    emptyNoTrucks: (gateName: string, dateStr: string) =>
+      `No trucks allotted to ${gateName} on ${dateStr}.`,
+    emptyFiltered: (gateName: string) =>
+      `No trucks match the active filter for ${gateName}.`,
+    completedCountNote: (n: number) =>
+      `${n} truck${n === 1 ? '' : 's'} already completed loading today.`,
+    queuePosTitle: 'Gate Queue Position',
+    priorityUrgent: 'URGENT PRIORITY',
+    priorityNormal: 'NORMAL PRIORITY',
+    exportType: 'EXPORT',
+    localType: 'LOCAL',
+    stoType: 'STO',
+    delNoteLabel: 'Del Note:',
+    placeLabel: 'Place:',
+    driverLabel: 'Driver:',
+    arrivalTimeLabel: 'Arrival Time:',
+    calledTimeLabel: 'Called:',
+    loadingStartedLabel: 'Loading Started:',
+    completedTimeLabel: 'Completed:',
+    statusLabels: {
+      under_loading: 'UNDER LOADING',
+      called: 'CALLED TO GATE',
+      waiting: 'WAITING IN QUEUE',
+      completed: 'COMPLETED',
+      cancelled: 'CANCELLED',
+    } as Record<TruckStatus, string>,
+  },
+  ar: {
+    title: 'حارس الأمن — مراقبة تخصيص الشاحنات للبوابات',
+    liveBadge: 'مباشر (10 ث)',
+    readOnlyBadge: 'نقطة تفتيش (للقراءة فقط)',
+    subtitlePrefix: 'العدد المباشر وقائمة الشاحنات المخصصة للتحميل حسب البوابة',
+    selectDateAria: 'اختر تاريخ المراقبة',
+    today: 'اليوم',
+    refresh: 'تحديث',
+    refreshTitle: 'تحديث قائمة البوابات الآن',
+    fullscreenOpen: 'شاشة الكابينة الكاملة',
+    fullscreenExit: 'إغلاق ملء الشاشة',
+    fullscreenOpenTitle: 'فتح عرض كابينة البوابة بملء الشاشة',
+    fullscreenExitTitle: 'إغلاق عرض الشاشة الكاملة',
+    langSwitchAria: 'لغة عرض شاشة حارس الأمن',
+    kpiActiveTitle: 'المخصصة النشطة',
+    kpiActiveSub: 'تحميل + استدعاء + انتظار',
+    kpiLoadingTitle: 'قيد التحميل',
+    kpiLoadingSub: 'داخل البوابات حالياً',
+    kpiCalledTitle: 'تم الاستدعاء للبوابة',
+    kpiCalledSub: 'تم منح تصريح الدخول',
+    kpiWaitingTitle: 'طابور الانتظار',
+    kpiWaitingSub: 'بانتظار الدخول خارج البوابة',
+    kpiCompletedTitle: 'المكتملة اليوم',
+    kpiCompletedSub: 'إجمالي مخصص اليوم:',
+    gateGlanceTitle: 'عدد الشاحنات المخصصة لكل بوابة (اضغط على البوابة للتركيز)',
+    showAllGates: 'عرض جميع البوابات',
+    allottedOne: 'شاحنة واحدة مخصصة',
+    allottedMany: (n: number) => `${n} شاحنات مخصصة`,
+    shortLoad: 'تحميل',
+    shortCall: 'استدعاء',
+    shortWait: 'انتظار',
+    shortDone: 'مكتمل',
+    urgentLabel: 'عاجل',
+    searchPlaceholder: 'ابحث برقم الشاحنة، إشعار التسليم، السائق، الوجهة...',
+    clearSearchTitle: 'مسح البحث',
+    filterGateAria: 'تصفية حسب البوابة',
+    allGates: 'جميع البوابات',
+    filterStatusAria: 'تصفية حسب حالة التخصيص',
+    statusActiveOnly: 'المخصصة النشطة فقط (تحميل + استدعاء + انتظار)',
+    statusAll: 'جميع الحالات (شاملة المكتملة)',
+    statusUnderLoading: 'قيد التحميل فقط',
+    statusCalled: 'تم الاستدعاء للبوابة فقط',
+    statusWaiting: 'في طابور الانتظار فقط',
+    statusCompleted: 'المكتملة فقط',
+    filterTypeAria: 'تصفية حسب نوع التحميل',
+    typeAll: 'جميع الأنواع (محلي وتصدير وتحويل مخزني STO)',
+    typeLocal: 'محلي فقط',
+    typeExport: 'تصدير فقط',
+    typeSto: 'تحويل مخزني (STO) فقط',
+    autoSortLabel: 'ترتيب تلقائي: الأولوية (العاجل أولاً) ← وقت الوصول',
+    autoSortTitle:
+      'يتم ترتيب كل بوابة تلقائياً بوضع شاحنات الأولوية العاجلة أولاً ثم حسب أقدم وقت وصول',
+    gateStateLoading: 'التحميل نشط',
+    gateStateCalled: 'تم استدعاء شاحنة',
+    gateStateWaiting: 'طابور انتظار',
+    gateStateClear: 'البوابة شاغرة',
+    detailLoading: 'تحميل',
+    detailCalled: 'استدعاء',
+    detailWaiting: 'انتظار',
+    detailDone: 'مكتمل',
+    allottedActive: 'النشطة المخصصة',
+    emptyNoTrucks: (gateName: string, dateStr: string) =>
+      `لا توجد شاحنات مخصصة لبوابة ${gateName} بتاريخ ${dateStr}.`,
+    emptyFiltered: (gateName: string) =>
+      `لا توجد شاحنات مطابقة للفلتر المحدد لبوابة ${gateName}.`,
+    completedCountNote: (n: number) =>
+      `تم إكمال تحميل ${n} ${n === 1 ? 'شاحنة' : 'شاحنات'} اليوم.`,
+    queuePosTitle: 'الترتيب في طابور البوابة',
+    priorityUrgent: 'أولوية عاجلة',
+    priorityNormal: 'أولوية عادية',
+    exportType: 'تصدير',
+    localType: 'محلي',
+    stoType: 'تحويل مخزني (STO)',
+    delNoteLabel: 'رقم التسليم:',
+    placeLabel: 'الوجهة:',
+    driverLabel: 'السائق:',
+    arrivalTimeLabel: 'وقت الوصول:',
+    calledTimeLabel: 'وقت الاستدعاء:',
+    loadingStartedLabel: 'بدء التحميل:',
+    completedTimeLabel: 'وقت الإكمال:',
+    statusLabels: {
+      under_loading: 'قيد التحميل',
+      called: 'تم الاستدعاء للبوابة',
+      waiting: 'في طابور الانتظار',
+      completed: 'مكتمل',
+      cancelled: 'ملغى',
+    } as Record<TruckStatus, string>,
+  },
+} as const;
 
 const STATUS_PRIORITY: Record<TruckStatus, number> = {
   under_loading: 0,
@@ -111,46 +294,50 @@ export function compareGateTrucks(a: TicketRecord, b: TicketRecord): number {
   return (a.sequenceNumber || 9999) - (b.sequenceNumber || 9999);
 }
 
-function getStatusBadgeInfo(status: TruckStatus): {
+function getStatusBadgeInfo(
+  status: TruckStatus,
+  lang: GuardLanguage
+): {
   label: string;
   badgeClass: string;
   rowAccentClass: string;
   dotClass: string;
 } {
+  const label = GUARD_TEXT[lang].statusLabels[status] || GUARD_TEXT[lang].statusLabels.cancelled;
   switch (status) {
     case 'under_loading':
       return {
-        label: 'UNDER LOADING',
+        label,
         badgeClass: 'bg-[#FFF3E8] text-[#B45309] border-[#F5B076]',
-        rowAccentClass: 'border-l-4 border-l-[#E9730C] bg-[#FFFDF9]',
+        rowAccentClass: 'border-s-4 border-s-[#E9730C] bg-[#FFFDF9]',
         dotClass: 'bg-[#E9730C] animate-pulse',
       };
     case 'called':
       return {
-        label: 'CALLED TO GATE',
+        label,
         badgeClass: 'bg-[#EBF5FF] text-[#085CAF] border-[#93C5FD]',
-        rowAccentClass: 'border-l-4 border-l-[#0A6ED1] bg-[#F8FBFF]',
+        rowAccentClass: 'border-s-4 border-s-[#0A6ED1] bg-[#F8FBFF]',
         dotClass: 'bg-[#0A6ED1] animate-pulse',
       };
     case 'waiting':
       return {
-        label: 'WAITING IN QUEUE',
+        label,
         badgeClass: 'bg-[#FEF9E7] text-[#854D0E] border-[#F3CC60]',
-        rowAccentClass: 'border-l-4 border-l-[#F0AB00] bg-white',
+        rowAccentClass: 'border-s-4 border-s-[#F0AB00] bg-white',
         dotClass: 'bg-[#F0AB00]',
       };
     case 'completed':
       return {
-        label: 'COMPLETED',
+        label,
         badgeClass: 'bg-[#EBFBF2] text-[#0D6B34] border-[#8AD8AA]',
-        rowAccentClass: 'border-l-4 border-l-[#107E3E] bg-[#F7FDF9]',
+        rowAccentClass: 'border-s-4 border-s-[#107E3E] bg-[#F7FDF9]',
         dotClass: 'bg-[#107E3E]',
       };
     default:
       return {
-        label: 'CANCELLED',
+        label,
         badgeClass: 'bg-[#FFF0F0] text-[#BB0000] border-[#F4B8B8]',
-        rowAccentClass: 'border-l-4 border-l-[#BB0000] bg-[#FFF9F9] opacity-75',
+        rowAccentClass: 'border-s-4 border-s-[#BB0000] bg-[#FFF9F9] opacity-75',
         dotClass: 'bg-[#BB0000]',
       };
   }
@@ -164,15 +351,35 @@ export const SecurityGuardView: React.FC<SecurityGuardViewProps> = ({
   onRefresh,
   isRestrictedGuard = false,
 }) => {
+  const [lang, setLang] = useState<GuardLanguage>(() => {
+    try {
+      const saved = localStorage.getItem(GUARD_LANG_STORAGE_KEY);
+      return saved === 'ar' ? 'ar' : 'en';
+    } catch {
+      return 'en';
+    }
+  });
   const [selectedGate, setSelectedGate] = useState<string>('ALL');
   const [statusFilter, setStatusFilter] = useState<StatusScopeFilter>('ACTIVE');
-  const [loadingTypeFilter, setLoadingTypeFilter] = useState<'ALL' | 'local' | 'export'>('ALL');
+  const [loadingTypeFilter, setLoadingTypeFilter] = useState<'ALL' | 'local' | 'export' | 'sto'>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
   const [isFullscreenBooth, setIsFullscreenBooth] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [liveClock, setLiveClock] = useState<string>(() =>
     new Date().toLocaleTimeString('en-GB', { hour12: false })
   );
+  const t = GUARD_TEXT[lang];
+  const isAr = lang === 'ar';
+
+  const handleLanguageChange = (nextLang: GuardLanguage) => {
+    setLang(nextLang);
+    try {
+      localStorage.setItem(GUARD_LANG_STORAGE_KEY, nextLang);
+    } catch {
+      // Ignore storage write errors
+    }
+  };
+
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -334,6 +541,8 @@ export const SecurityGuardView: React.FC<SecurityGuardViewProps> = ({
   return (
     <div
       ref={containerRef}
+      dir={isAr ? 'rtl' : 'ltr'}
+      lang={lang}
       className={
         isFullscreenBooth
           ? 'fixed inset-0 z-50 bg-[#EEF3F8] overflow-y-auto p-4 sm:p-6 space-y-4'
@@ -350,26 +559,61 @@ export const SecurityGuardView: React.FC<SecurityGuardViewProps> = ({
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <h2 className="text-base sm:text-lg font-black tracking-wide text-white">
-                  Security Guard — Gate Truck Allotment Monitor
+                  {t.title}
                 </h2>
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-extrabold bg-[#107E3E]/30 text-[#86EFAC] border border-[#24A159]/60">
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-extrabold bg-[#107E3E]/30 text-[#86EFAC] border border-[#24A159]/60 whitespace-nowrap">
                   <span className="w-1.5 h-1.5 rounded-full bg-[#4ADE80] animate-pulse" />
-                  <span>LIVE (10s)</span>
+                  <span>{t.liveBadge}</span>
                 </span>
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-white/10 text-[#E2E8F0] border border-white/20">
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-white/10 text-[#E2E8F0] border border-white/20 whitespace-nowrap">
                   <Lock className="w-3 h-3 text-[#F0AB00]" />
-                  <span>Read-Only Checkpost</span>
+                  <span>{t.readOnlyBadge}</span>
                 </span>
               </div>
               <p className="text-xs text-[#CBD8E6] mt-0.5">
-                Live gate-wise count &amp; truck list allotted for loading • {settings.companyName}
+                {t.subtitlePrefix} • {settings.companyName}
               </p>
             </div>
           </div>
 
-          {/* Right Controls: Live Clock, Date Switcher (for restricted view), Refresh, Fullscreen */}
+          {/* Right Controls: Language Switch, Live Clock, Date Switcher, Refresh, Fullscreen */}
           <div className="flex flex-wrap items-center gap-2 shrink-0">
-            <div className="flex items-center gap-1.5 bg-[#152230] border border-[#3E5873] rounded-lg px-2.5 h-9 text-xs font-mono font-black text-[#F0AB00]">
+            {/* Arabic / English Switch */}
+            <div
+              role="group"
+              aria-label={t.langSwitchAria}
+              className="inline-flex items-center h-9 p-0.5 bg-[#152230] border border-[#3E5873] rounded-lg shrink-0"
+            >
+              <button
+                type="button"
+                onClick={() => handleLanguageChange('en')}
+                aria-pressed={lang === 'en'}
+                className={`h-full px-2.5 rounded-md text-xs font-extrabold transition cursor-pointer whitespace-nowrap ${
+                  lang === 'en'
+                    ? 'bg-[#F0AB00] text-[#1C2833] shadow-xs'
+                    : 'text-[#CBD8E6] hover:text-white'
+                }`}
+              >
+                EN
+              </button>
+              <button
+                type="button"
+                onClick={() => handleLanguageChange('ar')}
+                aria-pressed={lang === 'ar'}
+                className={`h-full px-2.5 rounded-md text-xs font-extrabold transition cursor-pointer whitespace-nowrap ${
+                  lang === 'ar'
+                    ? 'bg-[#F0AB00] text-[#1C2833] shadow-xs'
+                    : 'text-[#CBD8E6] hover:text-white'
+                }`}
+              >
+                العربية
+              </button>
+            </div>
+
+            <div
+              dir="ltr"
+              className="flex items-center gap-1.5 bg-[#152230] border border-[#3E5873] rounded-lg px-2.5 h-9 text-xs font-mono font-black text-[#F0AB00] tabular-nums"
+            >
               <Clock className="w-3.5 h-3.5 text-[#68AEFF]" />
               <span>{liveClock}</span>
             </div>
@@ -377,7 +621,7 @@ export const SecurityGuardView: React.FC<SecurityGuardViewProps> = ({
             {(isRestrictedGuard || isFullscreenBooth) && onDateChange ? (
               <div className="relative inline-flex items-center h-9 bg-[#2B3E50] hover:bg-[#3A526A] rounded-lg border border-[#4F6B88] px-2.5 gap-1.5 transition">
                 <Calendar className="w-3.5 h-3.5 text-[#F0AB00] pointer-events-none shrink-0" />
-                <span className="text-xs font-black text-white font-mono pointer-events-none">
+                <span dir="ltr" className="text-xs font-black text-white font-mono pointer-events-none tabular-nums">
                   {formatDisplayDate(selectedDate)}
                 </span>
                 <input
@@ -386,55 +630,55 @@ export const SecurityGuardView: React.FC<SecurityGuardViewProps> = ({
                   onChange={(e) => {
                     if (e.target.value) onDateChange(e.target.value);
                   }}
-                  aria-label="Select Guard Monitor Date"
+                  aria-label={t.selectDateAria}
                   className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
                 />
                 {selectedDate !== getTodayDateString() && (
                   <button
                     type="button"
                     onClick={() => onDateChange(getTodayDateString())}
-                    className="relative z-10 px-1.5 py-0.5 text-[10px] bg-[#0A6ED1] hover:bg-[#085CAF] text-white rounded font-bold cursor-pointer"
+                    className="relative z-10 px-1.5 py-0.5 text-[10px] bg-[#0A6ED1] hover:bg-[#085CAF] text-white rounded font-bold cursor-pointer whitespace-nowrap"
                   >
-                    Today
+                    {t.today}
                   </button>
                 )}
               </div>
             ) : (
               <div className="inline-flex items-center h-9 bg-[#1B2A38] border border-[#45607A] rounded-lg px-2.5 gap-1.5 text-xs font-bold text-[#E2E8F0]">
                 <Calendar className="w-3.5 h-3.5 text-[#F0AB00]" />
-                <span>{formatDisplayDate(selectedDate)}</span>
+                <span dir="ltr" className="tabular-nums">{formatDisplayDate(selectedDate)}</span>
               </div>
             )}
 
             <button
               type="button"
               onClick={handleManualRefresh}
-              className="app-btn-sm !h-9 bg-[#2B3E50] hover:bg-[#3A526A] text-white border border-[#4F6B88]"
-              title="Refresh Gate Allotment Now"
+              className="app-btn-sm !h-9 bg-[#2B3E50] hover:bg-[#3A526A] text-white border border-[#4F6B88] whitespace-nowrap shrink-0"
+              title={t.refreshTitle}
             >
               <RefreshCw className={`w-3.5 h-3.5 text-[#F0AB00] ${isRefreshing ? 'animate-spin' : ''}`} />
-              <span>Refresh</span>
+              <span>{t.refresh}</span>
             </button>
 
             <button
               type="button"
               onClick={toggleBoothFullscreen}
-              className={`app-btn-sm !h-9 border font-bold ${
+              className={`app-btn-sm !h-9 border font-bold whitespace-nowrap shrink-0 ${
                 isFullscreenBooth
                   ? 'bg-[#BB0000] hover:bg-[#9E0000] text-white border-[#E04F4F]'
                   : 'bg-[#0A6ED1] hover:bg-[#085CAF] text-white border-[#3B93EE]'
               }`}
-              title={isFullscreenBooth ? 'Exit Full-Screen Gate Display' : 'Open Full-Screen Gate Booth Display'}
+              title={isFullscreenBooth ? t.fullscreenExitTitle : t.fullscreenOpenTitle}
             >
               {isFullscreenBooth ? (
                 <>
                   <Minimize2 className="w-3.5 h-3.5" />
-                  <span>Exit Fullscreen</span>
+                  <span>{t.fullscreenExit}</span>
                 </>
               ) : (
                 <>
                   <Maximize2 className="w-3.5 h-3.5" />
-                  <span>Full-Screen Booth</span>
+                  <span>{t.fullscreenOpen}</span>
                 </>
               )}
             </button>
@@ -445,8 +689,8 @@ export const SecurityGuardView: React.FC<SecurityGuardViewProps> = ({
         <div className="p-3 sm:p-4 bg-[#F7FAFD] border-b border-[#D8E2EC] grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5 sm:gap-3">
           <div className="surface-3d bg-white rounded-xl p-3 border border-[#B8DCFF]">
             <div className="flex items-center justify-between">
-              <span className="text-[11px] font-extrabold uppercase tracking-wide text-[#085CAF]">
-                Active Allotted
+              <span className="text-[11px] font-extrabold tracking-wide text-[#085CAF]">
+                {t.kpiActiveTitle}
               </span>
               <Truck className="w-4 h-4 text-[#0A6ED1]" />
             </div>
@@ -454,14 +698,14 @@ export const SecurityGuardView: React.FC<SecurityGuardViewProps> = ({
               {kpi.activeAllotted}
             </p>
             <p className="text-[10.5px] font-semibold text-[#5B738B]">
-              Loading + Called + Waiting
+              {t.kpiActiveSub}
             </p>
           </div>
 
           <div className="surface-3d bg-white rounded-xl p-3 border border-[#F5B076]">
             <div className="flex items-center justify-between">
-              <span className="text-[11px] font-extrabold uppercase tracking-wide text-[#B45309]">
-                Under Loading
+              <span className="text-[11px] font-extrabold tracking-wide text-[#B45309]">
+                {t.kpiLoadingTitle}
               </span>
               <Play className="w-4 h-4 text-[#E9730C]" />
             </div>
@@ -469,14 +713,14 @@ export const SecurityGuardView: React.FC<SecurityGuardViewProps> = ({
               {kpi.underLoading}
             </p>
             <p className="text-[10.5px] font-semibold text-[#5B738B]">
-              Currently Inside Gates
+              {t.kpiLoadingSub}
             </p>
           </div>
 
           <div className="surface-3d bg-white rounded-xl p-3 border border-[#93C5FD]">
             <div className="flex items-center justify-between">
-              <span className="text-[11px] font-extrabold uppercase tracking-wide text-[#0A6ED1]">
-                Called to Gate
+              <span className="text-[11px] font-extrabold tracking-wide text-[#0A6ED1]">
+                {t.kpiCalledTitle}
               </span>
               <Megaphone className="w-4 h-4 text-[#0A6ED1]" />
             </div>
@@ -484,14 +728,14 @@ export const SecurityGuardView: React.FC<SecurityGuardViewProps> = ({
               {kpi.called}
             </p>
             <p className="text-[10.5px] font-semibold text-[#5B738B]">
-              Entry Clearance Given
+              {t.kpiCalledSub}
             </p>
           </div>
 
           <div className="surface-3d bg-white rounded-xl p-3 border border-[#F3CC60]">
             <div className="flex items-center justify-between">
-              <span className="text-[11px] font-extrabold uppercase tracking-wide text-[#854D0E]">
-                Waiting Queue
+              <span className="text-[11px] font-extrabold tracking-wide text-[#854D0E]">
+                {t.kpiWaitingTitle}
               </span>
               <Clock className="w-4 h-4 text-[#D97706]" />
             </div>
@@ -499,22 +743,22 @@ export const SecurityGuardView: React.FC<SecurityGuardViewProps> = ({
               {kpi.waiting}
             </p>
             <p className="text-[10.5px] font-semibold text-[#5B738B]">
-              Waiting Outside Gate
+              {t.kpiWaitingSub}
             </p>
           </div>
 
           <div className="surface-3d bg-white rounded-xl p-3 border border-[#8AD8AA] col-span-2 sm:col-span-1">
             <div className="flex items-center justify-between">
-              <span className="text-[11px] font-extrabold uppercase tracking-wide text-[#107E3E]">
-                Completed Today
+              <span className="text-[11px] font-extrabold tracking-wide text-[#107E3E]">
+                {t.kpiCompletedTitle}
               </span>
               <CheckCircle2 className="w-4 h-4 text-[#107E3E]" />
             </div>
             <p className="text-2xl sm:text-3xl font-black text-[#107E3E] tabular-nums mt-1">
               {kpi.completed}
             </p>
-            <p className="text-[10.5px] font-semibold text-[#5B738B]">
-              Total Day Allotted: {kpi.totalAllottedToday}
+            <p className="text-[10.5px] font-semibold text-[#5B738B] tabular-nums">
+              {t.kpiCompletedSub} {kpi.totalAllottedToday}
             </p>
           </div>
         </div>
@@ -522,9 +766,9 @@ export const SecurityGuardView: React.FC<SecurityGuardViewProps> = ({
         {/* Gate-by-Gate Allotment Quick Glance Bar */}
         <div className="p-3 sm:p-4 bg-white border-b border-[#D8E2EC] space-y-2">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-xs font-black uppercase tracking-wider text-[#354A5F] flex items-center gap-1.5">
+            <p className="text-xs font-black tracking-wider text-[#354A5F] flex items-center gap-1.5">
               <DoorOpen className="w-4 h-4 text-[#0A6ED1]" />
-              <span>Gate-Wise Allotment Count (Click a Gate to Focus)</span>
+              <span>{t.gateGlanceTitle}</span>
             </p>
             {selectedGate !== 'ALL' && (
               <button
@@ -532,7 +776,7 @@ export const SecurityGuardView: React.FC<SecurityGuardViewProps> = ({
                 onClick={() => setSelectedGate('ALL')}
                 className="text-xs font-bold text-[#0A6ED1] hover:underline cursor-pointer"
               >
-                Show All Gates ({allGates.length})
+                {t.showAllGates} ({allGates.length})
               </button>
             )}
           </div>
@@ -546,7 +790,7 @@ export const SecurityGuardView: React.FC<SecurityGuardViewProps> = ({
                   key={g.gateName}
                   type="button"
                   onClick={() => setSelectedGate(isSelected ? 'ALL' : g.gateName)}
-                  className={`text-left rounded-xl p-3 border transition cursor-pointer ${
+                  className={`text-start rounded-xl p-3 border transition cursor-pointer ${
                     isSelected
                       ? 'bg-[#0A6ED1] text-white border-[#004C97] shadow-md ring-2 ring-[#68AEFF]'
                       : hasActive
@@ -555,7 +799,7 @@ export const SecurityGuardView: React.FC<SecurityGuardViewProps> = ({
                   }`}
                 >
                   <div className="flex items-center justify-between gap-1">
-                    <span className="text-xs font-black uppercase tracking-wide truncate">
+                    <span className="text-xs font-black tracking-wide truncate">
                       {g.gateName}
                     </span>
                     <span
@@ -575,29 +819,31 @@ export const SecurityGuardView: React.FC<SecurityGuardViewProps> = ({
                       isSelected ? 'text-[#DCEEFF]' : 'text-[#354A5F]'
                     }`}
                   >
-                    {g.activeAllottedCount === 1 ? '1 Truck Allotted' : `${g.activeAllottedCount} Trucks Allotted`}
+                    {g.activeAllottedCount === 1
+                      ? t.allottedOne
+                      : t.allottedMany(g.activeAllottedCount)}
                   </p>
                   <div
-                    className={`flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] font-bold mt-1.5 ${
+                    className={`flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] font-bold mt-1.5 tabular-nums ${
                       isSelected ? 'text-white/90' : 'text-[#5B738B]'
                     }`}
                   >
-                    <span>Load: {g.underLoadingCount}</span>
+                    <span>{t.shortLoad}: {g.underLoadingCount}</span>
                     <span>•</span>
-                    <span>Call: {g.calledCount}</span>
+                    <span>{t.shortCall}: {g.calledCount}</span>
                     <span>•</span>
-                    <span>Wait: {g.waitingCount}</span>
+                    <span>{t.shortWait}: {g.waitingCount}</span>
                     <span>•</span>
-                    <span>Done: {g.completedCount}</span>
+                    <span>{t.shortDone}: {g.completedCount}</span>
                     {g.urgentActiveCount > 0 && (
                       <span
-                        className={`ml-auto px-1.5 py-0.5 rounded text-[9px] font-black uppercase ${
+                        className={`ms-auto px-1.5 py-0.5 rounded text-[9px] font-black ${
                           isSelected
                             ? 'bg-[#BB0000] text-white'
                             : 'bg-[#FEE2E2] text-[#991B1B] border border-[#FCA5A5]'
                         }`}
                       >
-                        Urgent: {g.urgentActiveCount}
+                        {t.urgentLabel}: {g.urgentActiveCount}
                       </span>
                     )}
                   </div>
@@ -610,20 +856,20 @@ export const SecurityGuardView: React.FC<SecurityGuardViewProps> = ({
         {/* Filter & Search Toolbar */}
         <div className="p-3 sm:px-4 bg-[#F0F4F8] flex flex-wrap items-center gap-2">
           <div className="relative flex-1 min-w-[200px] sm:max-w-xs">
-            <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-[#5B738B] pointer-events-none" />
+            <Search className="w-3.5 h-3.5 absolute start-3 top-2.5 text-[#5B738B] pointer-events-none" />
             <input
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search Truck No., Del Note, Driver, Place..."
-              className="inset-3d w-full h-9 pl-8.5 pr-8 text-xs rounded-lg border border-[#C2D0DF] bg-white text-[#1C2833] font-medium focus:outline-none focus:ring-2 focus:ring-[#0A6ED1]"
+              placeholder={t.searchPlaceholder}
+              className="inset-3d w-full h-9 ps-8.5 pe-8 text-xs rounded-lg border border-[#C2D0DF] bg-white text-[#1C2833] font-medium focus:outline-none focus:ring-2 focus:ring-[#0A6ED1]"
             />
             {searchQuery && (
               <button
                 type="button"
                 onClick={() => setSearchQuery('')}
-                className="absolute right-2 top-2 text-[#5B738B] hover:text-[#1C2833] cursor-pointer"
-                title="Clear search"
+                className="absolute end-2 top-2 text-[#5B738B] hover:text-[#1C2833] cursor-pointer"
+                title={t.clearSearchTitle}
               >
                 <X className="w-4 h-4" />
               </button>
@@ -633,10 +879,12 @@ export const SecurityGuardView: React.FC<SecurityGuardViewProps> = ({
           <select
             value={selectedGate}
             onChange={(e) => setSelectedGate(e.target.value)}
-            aria-label="Filter by Gate"
+            aria-label={t.filterGateAria}
             className="inset-3d h-9 px-2.5 rounded-lg border border-[#C2D0DF] bg-white text-xs font-bold text-[#1C2833] cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#0A6ED1]"
           >
-            <option value="ALL">All Gates ({allGates.length})</option>
+            <option value="ALL">
+              {t.allGates} ({allGates.length})
+            </option>
             {allGates.map((g) => (
               <option key={g} value={g}>
                 {g}
@@ -647,34 +895,35 @@ export const SecurityGuardView: React.FC<SecurityGuardViewProps> = ({
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value as StatusScopeFilter)}
-            aria-label="Filter by Allotment Status"
+            aria-label={t.filterStatusAria}
             className="inset-3d h-9 px-2.5 rounded-lg border border-[#C2D0DF] bg-white text-xs font-bold text-[#1C2833] cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#0A6ED1]"
           >
-            <option value="ACTIVE">Active Allotted Only (Loading + Called + Waiting)</option>
-            <option value="ALL">All Statuses (Incl. Completed)</option>
-            <option value="under_loading">Under Loading Only</option>
-            <option value="called">Called to Gate Only</option>
-            <option value="waiting">Waiting in Queue Only</option>
-            <option value="completed">Completed Only</option>
+            <option value="ACTIVE">{t.statusActiveOnly}</option>
+            <option value="ALL">{t.statusAll}</option>
+            <option value="under_loading">{t.statusUnderLoading}</option>
+            <option value="called">{t.statusCalled}</option>
+            <option value="waiting">{t.statusWaiting}</option>
+            <option value="completed">{t.statusCompleted}</option>
           </select>
 
           <select
             value={loadingTypeFilter}
-            onChange={(e) => setLoadingTypeFilter(e.target.value as 'ALL' | 'local' | 'export')}
-            aria-label="Filter by Loading Type"
+            onChange={(e) => setLoadingTypeFilter(e.target.value as 'ALL' | 'local' | 'export' | 'sto')}
+            aria-label={t.filterTypeAria}
             className="inset-3d h-9 px-2.5 rounded-lg border border-[#C2D0DF] bg-white text-xs font-bold text-[#1C2833] cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#0A6ED1]"
           >
-            <option value="ALL">All Types (Local &amp; Export)</option>
-            <option value="local">Local Only</option>
-            <option value="export">Export Only</option>
+            <option value="ALL">{t.typeAll}</option>
+            <option value="local">{t.typeLocal}</option>
+            <option value="export">{t.typeExport}</option>
+            <option value="sto">{t.typeSto}</option>
           </select>
 
           <div
-            className="ml-auto inline-flex items-center gap-1.5 h-9 px-3 rounded-lg bg-[#E6EFF8] border border-[#B8D0E8] text-[11px] font-extrabold text-[#1E3A5F]"
-            title="Each gate queue automatically places Urgent Gate Priority trucks first, then orders by earliest Arrival Time"
+            className="ms-auto inline-flex items-center gap-1.5 h-9 px-3 rounded-lg bg-[#E6EFF8] border border-[#B8D0E8] text-[11px] font-extrabold text-[#1E3A5F]"
+            title={t.autoSortTitle}
           >
             <ArrowUpDown className="w-3.5 h-3.5 text-[#0A6ED1] shrink-0" />
-            <span>Auto-Sort: Gate Priority (Urgent First) → Arrival Time</span>
+            <span>{t.autoSortLabel}</span>
           </div>
         </div>
       </div>
@@ -706,28 +955,28 @@ export const SecurityGuardView: React.FC<SecurityGuardViewProps> = ({
                         {gate.gateName}
                       </h3>
                       {gate.underLoadingCount > 0 ? (
-                        <span className="px-2 py-0.5 rounded text-[10px] font-black bg-[#E9730C] text-white">
-                          LOADING ACTIVE
+                        <span className="px-2 py-0.5 rounded text-[10px] font-black bg-[#E9730C] text-white whitespace-nowrap">
+                          {t.gateStateLoading}
                         </span>
                       ) : gate.calledCount > 0 ? (
-                        <span className="px-2 py-0.5 rounded text-[10px] font-black bg-[#0A6ED1] text-white border border-[#68AEFF]">
-                          TRUCK CALLED
+                        <span className="px-2 py-0.5 rounded text-[10px] font-black bg-[#0A6ED1] text-white border border-[#68AEFF] whitespace-nowrap">
+                          {t.gateStateCalled}
                         </span>
                       ) : gate.waitingCount > 0 ? (
-                        <span className="px-2 py-0.5 rounded text-[10px] font-black bg-[#F0AB00] text-[#1C2833]">
-                          QUEUE WAITING
+                        <span className="px-2 py-0.5 rounded text-[10px] font-black bg-[#F0AB00] text-[#1C2833] whitespace-nowrap">
+                          {t.gateStateWaiting}
                         </span>
                       ) : (
-                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-white/15 text-[#CBD8E6]">
-                          GATE CLEAR
+                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-white/15 text-[#CBD8E6] whitespace-nowrap">
+                          {t.gateStateClear}
                         </span>
                       )}
                     </div>
-                    <p className="text-[11px] text-[#CBD8E6]">
-                      Loading: <strong className="text-white">{gate.underLoadingCount}</strong> • Called:{' '}
-                      <strong className="text-white">{gate.calledCount}</strong> • Waiting:{' '}
-                      <strong className="text-white">{gate.waitingCount}</strong> • Done:{' '}
-                      <strong className="text-white">{gate.completedCount}</strong>
+                    <p className="text-[11px] text-[#CBD8E6] tabular-nums">
+                      {t.detailLoading}: <strong className="text-white">{gate.underLoadingCount}</strong> •{' '}
+                      {t.detailCalled}: <strong className="text-white">{gate.calledCount}</strong> •{' '}
+                      {t.detailWaiting}: <strong className="text-white">{gate.waitingCount}</strong> •{' '}
+                      {t.detailDone}: <strong className="text-white">{gate.completedCount}</strong>
                     </p>
                   </div>
                 </div>
@@ -744,8 +993,8 @@ export const SecurityGuardView: React.FC<SecurityGuardViewProps> = ({
                     <p className="text-lg font-black leading-none tabular-nums">
                       {gate.activeAllottedCount}
                     </p>
-                    <p className="text-[10px] font-extrabold uppercase tracking-wider mt-0.5">
-                      Allotted Active
+                    <p className="text-[10px] font-extrabold tracking-wider mt-0.5">
+                      {t.allottedActive}
                     </p>
                   </div>
                 </div>
@@ -758,18 +1007,18 @@ export const SecurityGuardView: React.FC<SecurityGuardViewProps> = ({
                     <Truck className="w-7 h-7 text-[#94A3B8] mx-auto mb-1.5" />
                     <p className="text-xs font-bold text-[#475569]">
                       {gate.totalDayCount === 0
-                        ? `No trucks allotted to ${gate.gateName} on ${formatDisplayDate(selectedDate)}.`
-                        : `No trucks match the active filter for ${gate.gateName}.`}
+                        ? t.emptyNoTrucks(gate.gateName, formatDisplayDate(selectedDate))
+                        : t.emptyFiltered(gate.gateName)}
                     </p>
                     {gate.completedCount > 0 && statusFilter === 'ACTIVE' && (
                       <p className="text-[11px] text-[#107E3E] font-semibold mt-1">
-                        {gate.completedCount} truck{gate.completedCount === 1 ? '' : 's'} already completed loading today.
+                        {t.completedCountNote(gate.completedCount)}
                       </p>
                     )}
                   </div>
                 ) : (
                   gate.filteredRows.map((ticket, idx) => {
-                    const statusUi = getStatusBadgeInfo(ticket.status);
+                    const statusUi = getStatusBadgeInfo(ticket.status, lang);
                     const loadingType = resolveLoadingType(ticket);
                     const delNote = ticket.delNoteNumber || ticket.loadingSlip?.delNoteNumber || '';
                     const queueNum = ticket.gateSequenceNumber || idx + 1;
@@ -791,43 +1040,56 @@ export const SecurityGuardView: React.FC<SecurityGuardViewProps> = ({
                           {/* Left: Queue # + Truck Number + Tags */}
                           <div className="flex flex-wrap items-center gap-2 min-w-0">
                             <span
+                              dir="ltr"
                               className="inline-flex items-center justify-center min-w-[32px] h-7 px-2 rounded-lg bg-[#263748] text-white text-xs font-black tabular-nums"
-                              title="Gate Queue Position"
+                              title={t.queuePosTitle}
                             >
                               #{queueNum}
                             </span>
 
-                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#1C2833] text-white font-mono text-sm font-black tracking-wide shadow-2xs">
+                            <span
+                              dir="ltr"
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#1C2833] text-white font-mono text-sm font-black tracking-wide shadow-2xs"
+                            >
                               <Truck className="w-3.5 h-3.5 text-[#F0AB00] shrink-0" />
                               <span>{ticket.truckNumber}</span>
                             </span>
 
                             {ticket.priority === 'urgent' ? (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-black bg-[#BB0000] text-white uppercase shadow-2xs">
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-black bg-[#BB0000] text-white shadow-2xs whitespace-nowrap">
                                 <AlertTriangle className="w-3 h-3" />
-                                <span>URGENT PRIORITY</span>
+                                <span>{t.priorityUrgent}</span>
                               </span>
                             ) : (
-                              <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-[#F1F5F9] text-[#475569] border border-[#CBD5E1] uppercase">
-                                NORMAL PRIORITY
+                              <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-[#F1F5F9] text-[#475569] border border-[#CBD5E1] whitespace-nowrap">
+                                {t.priorityNormal}
                               </span>
                             )}
 
                             <span
-                              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-extrabold border uppercase ${
+                              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-extrabold border whitespace-nowrap ${
                                 loadingType === 'export'
                                   ? 'bg-[#EEF2FF] text-[#3730A3] border-[#C7D2FE]'
+                                  : loadingType === 'sto'
+                                  ? 'bg-[#FEF3C7] text-[#92400E] border-[#FCD34D]'
                                   : 'bg-[#F1F5F9] text-[#334155] border-[#CBD5E1]'
                               }`}
                             >
                               {loadingType === 'export' && <Globe className="w-2.5 h-2.5" />}
-                              <span>{loadingType === 'export' ? 'EXPORT' : 'LOCAL'}</span>
+                              {loadingType === 'sto' && <ArrowLeftRight className="w-2.5 h-2.5" />}
+                              <span>
+                                {loadingType === 'export'
+                                  ? t.exportType
+                                  : loadingType === 'sto'
+                                  ? t.stoType
+                                  : t.localType}
+                              </span>
                             </span>
                           </div>
 
                           {/* Right: Status Badge */}
                           <span
-                            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-black border shrink-0 ${statusUi.badgeClass}`}
+                            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-black border shrink-0 whitespace-nowrap ${statusUi.badgeClass}`}
                           >
                             <span className={`w-2 h-2 rounded-full ${statusUi.dotClass}`} />
                             <span>{statusUi.label}</span>
@@ -839,18 +1101,18 @@ export const SecurityGuardView: React.FC<SecurityGuardViewProps> = ({
                           <div className="flex items-center gap-1.5 min-w-0">
                             <FileText className="w-3.5 h-3.5 text-[#0A6ED1] shrink-0" />
                             <span className="truncate">
-                              <strong>Del Note:</strong>{' '}
-                              <span className="font-mono font-bold text-[#1C2833]">
+                              <strong>{t.delNoteLabel}</strong>{' '}
+                              <span dir="ltr" className="font-mono font-bold text-[#1C2833]">
                                 {delNote || '—'}
                               </span>{' '}
-                              <span className="text-[11px] text-[#64748B]">({ticket.ticketNumber})</span>
+                              <span dir="ltr" className="text-[11px] text-[#64748B]">({ticket.ticketNumber})</span>
                             </span>
                           </div>
 
                           <div className="flex items-center gap-1.5 min-w-0">
                             <MapPin className="w-3.5 h-3.5 text-[#E9730C] shrink-0" />
                             <span className="truncate">
-                              <strong>Place:</strong>{' '}
+                              <strong>{t.placeLabel}</strong>{' '}
                               <span className="font-bold text-[#1C2833]">
                                 {ticket.destinationPlace || ticket.loadingSlip?.placeName || '—'}
                               </span>
@@ -858,7 +1120,7 @@ export const SecurityGuardView: React.FC<SecurityGuardViewProps> = ({
                           </div>
 
                           <div className="flex items-center gap-1.5 min-w-0">
-                            <span className="font-bold text-[#475569]">Driver:</span>
+                            <span className="font-bold text-[#475569]">{t.driverLabel}</span>
                             <span className="font-bold text-[#1C2833] truncate">
                               {ticket.driverName || '—'}
                             </span>
@@ -866,7 +1128,7 @@ export const SecurityGuardView: React.FC<SecurityGuardViewProps> = ({
 
                           <div className="flex items-center gap-1.5 min-w-0">
                             <Phone className="w-3.5 h-3.5 text-[#107E3E] shrink-0" />
-                            <span className="font-mono font-bold text-[#1C2833]">
+                            <span dir="ltr" className="font-mono font-bold text-[#1C2833] tabular-nums">
                               {ticket.driverPhone ? formatSaudiPhoneNumber(ticket.driverPhone) : '—'}
                             </span>
                           </div>
@@ -875,27 +1137,31 @@ export const SecurityGuardView: React.FC<SecurityGuardViewProps> = ({
                         {/* Bottom Timestamps */}
                         <div className="mt-2 pt-2 border-t border-[#E2E8F0] flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-[#475569] font-medium">
                           <span>
-                            <strong>Arrival Time:</strong>{' '}
-                            <span className="font-mono font-bold text-[#1C2833]">{ticket.timeIn || '—'}</span>
+                            <strong>{t.arrivalTimeLabel}</strong>{' '}
+                            <span dir="ltr" className="font-mono font-bold text-[#1C2833] tabular-nums">
+                              {ticket.timeIn || '—'}
+                            </span>
                           </span>
                           {ticket.timeCalled && (
                             <span>
-                              <strong>Called:</strong>{' '}
-                              <span className="font-mono text-[#085CAF] font-bold">{ticket.timeCalled}</span>
+                              <strong>{t.calledTimeLabel}</strong>{' '}
+                              <span dir="ltr" className="font-mono text-[#085CAF] font-bold tabular-nums">
+                                {ticket.timeCalled}
+                              </span>
                             </span>
                           )}
                           {ticket.timeLoadingStarted && (
                             <span>
-                              <strong>Loading Started:</strong>{' '}
-                              <span className="font-mono text-[#B45309] font-bold">
+                              <strong>{t.loadingStartedLabel}</strong>{' '}
+                              <span dir="ltr" className="font-mono text-[#B45309] font-bold tabular-nums">
                                 {ticket.timeLoadingStarted}
                               </span>
                             </span>
                           )}
                           {ticket.timeCompleted && (
                             <span>
-                              <strong>Completed:</strong>{' '}
-                              <span className="font-mono text-[#107E3E] font-bold">
+                              <strong>{t.completedTimeLabel}</strong>{' '}
+                              <span dir="ltr" className="font-mono text-[#107E3E] font-bold tabular-nums">
                                 {ticket.timeCompleted}
                               </span>
                             </span>

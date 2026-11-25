@@ -35,6 +35,7 @@ export const DailyReportModal: React.FC<DailyReportModalProps> = ({
   const activeLoadingTrucks = dayTickets.filter((t) => t.status !== 'cancelled');
   const localTrucksCount = activeLoadingTrucks.filter((t) => resolveLoadingType(t) === 'local').length;
   const exportTrucksCount = activeLoadingTrucks.filter((t) => resolveLoadingType(t) === 'export').length;
+  const stoTrucksCount = activeLoadingTrucks.filter((t) => resolveLoadingType(t) === 'sto').length;
 
   const totalQty = dayTickets.reduce((acc, t) => acc + (t.loadingSlip?.totalQty || 0), 0);
   const totalPallets = dayTickets.reduce((acc, t) => acc + (t.loadingSlip?.totalPallets || 0), 0);
@@ -234,8 +235,8 @@ export const DailyReportModal: React.FC<DailyReportModalProps> = ({
             </div>
           </div>
 
-          {/* Total Truck Loading Breakdown: Local & Export */}
-          <div className="grid grid-cols-3 gap-3 text-center">
+          {/* Total Truck Loading Breakdown: Local, Export & STO */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
             <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-300">
               <span className="text-[10px] font-bold text-slate-600 uppercase block">Total Truck Loading</span>
               <span className="text-xl font-black text-slate-900">{activeLoadingTrucks.length}</span>
@@ -247,6 +248,10 @@ export const DailyReportModal: React.FC<DailyReportModalProps> = ({
             <div className="bg-indigo-50 p-2.5 rounded-xl border border-indigo-300">
               <span className="text-[10px] font-bold text-indigo-800 uppercase block">Export Trucks</span>
               <span className="text-xl font-black text-indigo-700">{exportTrucksCount}</span>
+            </div>
+            <div className="bg-amber-50 p-2.5 rounded-xl border border-amber-300">
+              <span className="text-[10px] font-bold text-amber-800 uppercase block">STO Trucks</span>
+              <span className="text-xl font-black text-amber-700">{stoTrucksCount}</span>
             </div>
           </div>
 
@@ -287,15 +292,22 @@ export const DailyReportModal: React.FC<DailyReportModalProps> = ({
                       </td>
                       <td className="py-1.5 px-2">
                         <span>{t.destinationPlace || '—'}</span>
-                        <span
-                          className={`ml-1.5 inline-block px-1.5 py-0.2 rounded text-[9px] font-black uppercase border ${
-                            resolveLoadingType(t) === 'export'
-                              ? 'bg-indigo-50 text-indigo-800 border-indigo-300'
-                              : 'bg-emerald-50 text-emerald-800 border-emerald-300'
-                          }`}
-                        >
-                          {resolveLoadingType(t) === 'export' ? 'EXPORT' : 'LOCAL'}
-                        </span>
+                        {(() => {
+                          const lType = resolveLoadingType(t);
+                          return (
+                            <span
+                              className={`ml-1.5 inline-block px-1.5 py-0.2 rounded text-[9px] font-black uppercase border ${
+                                lType === 'export'
+                                  ? 'bg-indigo-50 text-indigo-800 border-indigo-300'
+                                  : lType === 'sto'
+                                  ? 'bg-amber-50 text-amber-800 border-amber-300'
+                                  : 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                              }`}
+                            >
+                              {lType === 'export' ? 'EXPORT' : lType === 'sto' ? 'STO' : 'LOCAL'}
+                            </span>
+                          );
+                        })()}
                       </td>
                       <td className="py-1.5 px-2 font-bold text-blue-900">
                         {t.loadingSlip?.delNoteNumber || '—'}
@@ -327,7 +339,7 @@ export const DailyReportModal: React.FC<DailyReportModalProps> = ({
           {/* Daily Totals Footer */}
           <div className="bg-neutral-100 p-3 rounded-lg border border-black/40 flex flex-wrap justify-between items-center gap-2 text-xs font-bold text-neutral-800">
             <span>
-              TRUCK LOADING: Total {activeLoadingTrucks.length} (Local: {localTrucksCount} | Export: {exportTrucksCount})
+              TRUCK LOADING: Total {activeLoadingTrucks.length} (Local: {localTrucksCount} | Export: {exportTrucksCount} | STO: {stoTrucksCount})
             </span>
             <span className="text-sm font-black text-black">
               Total Quantity: {totalQty} Units | Total Pallets: {totalPallets} | Total Loose Rolls: {totalLooseRolls}

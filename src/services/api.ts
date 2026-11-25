@@ -799,7 +799,44 @@ export const ApiClient = {
   }> {
     if (staticFirebaseOnlyMode) {
       const ticket = await ApiClient.updateTicket(id, updates);
-      return { ticket };
+      const slipItems = updates.loadingSlip?.items;
+      let autoSavedMaterials: MaterialMasterRecord[] = [];
+      if (Array.isArray(slipItems) && slipItems.length > 0) {
+        const existingMaterials = StorageService.getMaterials();
+        const existingNames = new Set(
+          existingMaterials.map((m) => m.materialName.trim().toUpperCase())
+        );
+        const now = Date.now();
+        const createdList: MaterialMasterRecord[] = [];
+        slipItems.forEach((item, idx) => {
+          const cleanName = String(item?.description || '').trim().toUpperCase();
+          if (!cleanName || existingNames.has(cleanName)) return;
+          existingNames.add(cleanName);
+          const parsedRatio = Number(item?.palletRatio);
+          const palletRatio =
+            Number.isFinite(parsedRatio) && parsedRatio > 0 && parsedRatio <= 10000
+              ? Math.round(parsedRatio)
+              : 23;
+          createdList.push({
+            id: `mat_${now}_${idx}_${Math.random().toString(36).slice(2, 6)}`,
+            materialName: cleanName,
+            packType: String(item?.pack || '').trim() || 'Rolls',
+            palletRatio,
+            remarks: String(item?.remarks || '').trim().toUpperCase(),
+            createdAt: now,
+            updatedAt: now,
+          });
+        });
+        if (createdList.length > 0) {
+          StorageService.mergeMaterialsCache(createdList);
+          await importMaterialsBatchToFirestore(createdList).catch(() => {});
+          autoSavedMaterials = createdList;
+        }
+      }
+      return {
+        ticket,
+        ...(autoSavedMaterials.length > 0 ? { autoSavedMaterials } : {}),
+      };
     }
     return request<{
       ticket: TicketRecord;

@@ -7,6 +7,7 @@ import {
   AuthUser,
   LoadingAlertNotification,
   MaterialMasterRecord,
+  WhatsAppDispatchOutcome,
 } from './types';
 import {
   StorageService,
@@ -235,14 +236,16 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [gateFilter, setGateFilter] = useState('ALL');
   const [statusFilter, setStatusFilter] = useState('ALL');
-  const [loadingTypeFilter, setLoadingTypeFilter] = useState<'ALL' | 'local' | 'export'>('ALL');
+  const [loadingTypeFilter, setLoadingTypeFilter] = useState<'ALL' | 'local' | 'export' | 'sto'>('ALL');
 
   // Modals State
   const [showNewTicketModal, setShowNewTicketModal] = useState(false);
   const [activeTicketForEdit, setActiveTicketForEdit] = useState<TicketRecord | null>(null);
   const [activeTicketForSlip, setActiveTicketForSlip] = useState<TicketRecord | null>(null);
   const [activeTicketForPrintSlip, setActiveTicketForPrintSlip] = useState<TicketRecord | null>(null);
+  const [autoPrintSlip, setAutoPrintSlip] = useState(false);
   const [activeTicketForPrintTicket, setActiveTicketForPrintTicket] = useState<TicketRecord | null>(null);
+  const [autoPrintTicket, setAutoPrintTicket] = useState(false);
   const [activeTicketForWhatsApp, setActiveTicketForWhatsApp] = useState<{
     ticket: TicketRecord;
     templateId?: string;
@@ -1285,15 +1288,80 @@ export default function App() {
     }
   };
 
-  // Save new ticket handler
-  const handleSaveNewTicket = async (ticket: TicketRecord, nextAction?: 'print' | 'whatsapp') => {
+  // Save new ticket handler (supports inline Loading Slip creation, direct slip modal open, and direct A4/Ticket print)
+  const handleSaveNewTicket = async (
+    ticket: TicketRecord,
+    nextAction?: 'print' | 'whatsapp' | 'open_slip' | 'print_slip' | 'slip_saved',
+    extra?: {
+      autoSavedMaterials?: MaterialMasterRecord[];
+      whatsappNotification?: WhatsAppDispatchOutcome;
+    }
+  ) => {
     setShowNewTicketModal(false);
-    if (isFirestoreActive) await saveTicketToFirestore(ticket);
-    await loadData();
+    setTickets((prev) => {
+      const next = [ticket, ...prev.filter((t) => t.id !== ticket.id)];
+      StorageService.saveTickets(next);
+      return next;
+    });
+
+    if (extra?.autoSavedMaterials && extra.autoSavedMaterials.length > 0) {
+      StorageService.mergeMaterialsCache(extra.autoSavedMaterials);
+      setMaterials(StorageService.getMaterials());
+      setMaterialAutoSaveMsg(
+        `Auto-saved ${extra.autoSavedMaterials.length} new material(s) to Material Master: ${extra.autoSavedMaterials
+          .map((m) => `${m.materialName} (${m.packType}, 1P=${m.palletRatio})`)
+          .join(', ')}`
+      );
+      if (isFirestoreActive && !isStaticFirebaseOnlyMode()) {
+        void importMaterialsToFirestore(extra.autoSavedMaterials).catch((err) =>
+          console.error('Firestore material import error:', err)
+        );
+      }
+    }
+
     if (nextAction === 'print') {
+      setAutoPrintTicket(true);
       setActiveTicketForPrintTicket(ticket);
+    } else if (nextAction === 'print_slip') {
+      setAutoPrintSlip(true);
+      setActiveTicketForPrintSlip(ticket);
+    } else if (nextAction === 'open_slip') {
+      setActiveTicketForSlip(ticket);
     } else if (nextAction === 'whatsapp') {
       setActiveTicketForWhatsApp({ ticket, templateId: 'token_generated' });
+    }
+
+    if (isFirestoreActive && !isStaticFirebaseOnlyMode()) {
+      void saveTicketToFirestore(ticket).catch((err) =>
+        console.error('Firestore ticket sync error:', err)
+      );
+    }
+    void loadData();
+
+    const waNote = extra?.whatsappNotification;
+    if (waNote && waNote.triggered) {
+      if (waNote.deliveryStatus === 'sent') {
+        setWaToast({
+          type: 'sent',
+          ticketId: ticket.id,
+          ticketNumber: ticket.ticketNumber,
+          truckNumber: ticket.truckNumber,
+          message: `Auto WhatsApp sent to ${waNote.driverMobile} (${waNote.gateNumber} · Queue #${waNote.queueNumber}).`,
+          liveStatusUrl: waNote.liveStatusUrl,
+        });
+      } else {
+        setWaToast({
+          type: waNote.deliveryStatus,
+          ticketId: ticket.id,
+          ticketNumber: ticket.ticketNumber,
+          truckNumber: ticket.truckNumber,
+          message:
+            waNote.warning ||
+            waNote.errorMessage ||
+            'Loading slip saved, but automatic WhatsApp delivery did not complete.',
+          liveStatusUrl: waNote.liveStatusUrl,
+        });
+      }
     }
   };
 
@@ -1302,25 +1370,67 @@ export default function App() {
     setAppError(null);
     setMaterialAutoSaveMsg(null);
     try {
-      const { ticket: saved, whatsappNotification, autoSavedMaterials } =
-        await ApiClient.updateTicketWithNotification(updatedTicket.id, updatedTicket);
-      if (isFirestoreActive) {
-        await saveTicketToFirestore(saved);
+      let response;
+      try {
+        response = await ApiClient.updateTicketWithNotification(updatedTicket.id, updatedTicket);
+      } catch (err: any) {
+        // If a background poll or auto-status timer bumped version while modal was open,
+        // fetch the latest version once and retry cleanly unless the slip is locked.
+        if (
+          err instanceof ApiError &&
+          err.status === 409 &&
+          !String(err.message || '').toLowerCase().includes('locked')
+        ) {
+          const latestList = await ApiClient.getTickets().catch(() => [] as TicketRecord[]);
+          const latest = latestList.find((t) => t.id === updatedTicket.id);
+          if (latest && !latest.loadingSlip?.isLocked) {
+            response = await ApiClient.updateTicketWithNotification(updatedTicket.id, {
+              ...updatedTicket,
+              version: latest.version,
+            });
+          } else {
+            throw err;
+          }
+        } else {
+          throw err;
+        }
       }
+
+      const { ticket: saved, whatsappNotification, autoSavedMaterials } = response;
+
+      setTickets((prev) => {
+        const next = prev.map((t) => (t.id === saved.id ? saved : t));
+        StorageService.saveTickets(next);
+        return next;
+      });
+
       if (autoSavedMaterials && autoSavedMaterials.length > 0) {
         StorageService.mergeMaterialsCache(autoSavedMaterials);
         setMaterials(StorageService.getMaterials());
-        if (isFirestoreActive) {
-          await importMaterialsToFirestore(autoSavedMaterials);
-        }
         setMaterialAutoSaveMsg(
           `Auto-saved ${autoSavedMaterials.length} new material(s) to Material Master: ${autoSavedMaterials
             .map((m) => `${m.materialName} (${m.packType}, 1P=${m.palletRatio})`)
             .join(', ')}`
         );
       }
+
       setActiveTicketForSlip(null);
-      await loadData();
+      if (openPrintDirectly) {
+        setAutoPrintSlip(true);
+        setActiveTicketForPrintSlip(saved);
+      }
+
+      if (isFirestoreActive && !isStaticFirebaseOnlyMode()) {
+        void saveTicketToFirestore(saved).catch((err) =>
+          console.error('Firestore ticket save error:', err)
+        );
+        if (autoSavedMaterials && autoSavedMaterials.length > 0) {
+          void importMaterialsToFirestore(autoSavedMaterials).catch((err) =>
+            console.error('Firestore material import error:', err)
+          );
+        }
+      }
+      void loadData();
 
       if (whatsappNotification && whatsappNotification.triggered) {
         if (whatsappNotification.deliveryStatus === 'sent') {
@@ -1346,13 +1456,10 @@ export default function App() {
           });
         }
       }
-
-      if (openPrintDirectly) {
-        setActiveTicketForPrintSlip(saved);
-      }
     } catch (err: any) {
-      await loadData();
+      void loadData();
       setAppError(err?.message || 'Failed to save loading slip.');
+      throw err;
     }
   };
 
@@ -2582,16 +2689,17 @@ export default function App() {
                 <option value="cancelled">Cancelled</option>
               </select>
 
-              {/* Local / Export Loading Type Filter */}
+              {/* Local / Export / STO Loading Type Filter */}
               <select
                 value={loadingTypeFilter}
-                onChange={(e) => setLoadingTypeFilter(e.target.value as 'ALL' | 'local' | 'export')}
-                aria-label="Filter by Loading Type (Local / Export)"
+                onChange={(e) => setLoadingTypeFilter(e.target.value as 'ALL' | 'local' | 'export' | 'sto')}
+                aria-label="Filter by Loading Type (Local / Export / STO)"
                 className="inset-3d h-9 text-xs font-bold px-2.5 rounded-lg border border-[#C2D0DF] bg-[#F4F8FC] text-[#1C2833] focus:outline-none focus:ring-2 focus:ring-[#0A6ED1] cursor-pointer"
               >
-                <option value="ALL">All Types (Local &amp; Export)</option>
+                <option value="ALL">All Types (Local, Export &amp; STO)</option>
                 <option value="local">Local Only</option>
                 <option value="export">Export Only</option>
+                <option value="sto">STO Only</option>
               </select>
             </div>
           )}
@@ -2781,6 +2889,10 @@ export default function App() {
         <NewTicketModal
           date={selectedDate}
           settings={settings}
+          materials={materials}
+          currentUserId={currentUser.id}
+          storeInchargeFullName={currentUser.fullName}
+          storeInchargeSignatureDataUrl={currentUser.signatureDataUrl}
           onSave={handleSaveNewTicket}
           onClose={() => setShowNewTicketModal(false)}
         />
@@ -2822,7 +2934,11 @@ export default function App() {
           currentUserId={currentUser.id}
           storeInchargeFullName={currentUser.fullName}
           storeInchargeSignatureDataUrl={currentUser.signatureDataUrl}
-          onClose={() => setActiveTicketForPrintSlip(null)}
+          autoPrint={autoPrintSlip}
+          onClose={() => {
+            setAutoPrintSlip(false);
+            setActiveTicketForPrintSlip(null);
+          }}
         />
       )}
 
@@ -2831,7 +2947,11 @@ export default function App() {
         <TicketPrintView
           ticket={activeTicketForPrintTicket}
           settings={settings}
-          onClose={() => setActiveTicketForPrintTicket(null)}
+          autoPrint={autoPrintTicket}
+          onClose={() => {
+            setAutoPrintTicket(false);
+            setActiveTicketForPrintTicket(null);
+          }}
         />
       )}
 

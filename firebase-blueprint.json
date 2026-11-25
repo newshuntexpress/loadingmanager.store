@@ -258,7 +258,7 @@
         },
         "loadingType": {
           "type": "string",
-          "enum": ["local", "export"],
+          "enum": ["local", "export", "sto"],
           "maxLength": 16
         },
         "delNoteNumber": {

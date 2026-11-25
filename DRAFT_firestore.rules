@@ -225,7 +225,7 @@ service cloud.firestore {
         data.driverName is string && data.driverName.size() >= 1 && data.driverName.size() <= 120 &&
         (!('transporterName' in data) || (data.transporterName is string && data.transporterName.size() <= 120)) &&
         (!('destinationPlace' in data) || (data.destinationPlace is string && data.destinationPlace.size() <= 160)) &&
-        (!('loadingType' in data) || (data.loadingType is string && data.loadingType.size() <= 16 && data.loadingType in ['local', 'export'])) &&
+        (!('loadingType' in data) || (data.loadingType is string && data.loadingType.size() <= 16 && data.loadingType in ['local', 'export', 'sto'])) &&
         (!('delNoteNumber' in data) || (data.delNoteNumber is string && data.delNoteNumber.size() <= 64)) &&
         data.status is string && data.status.size() <= 24 && data.status in ['waiting', 'called', 'under_loading', 'completed', 'cancelled'] &&
         (!('loadingSlip' in data) || isValidLoadingSlip(data.loadingSlip)) &&
@@ -380,7 +380,7 @@ service cloud.firestore {
     match /gate_tickets/{ticketId} {
       allow get: if isValidId(ticketId) &&
         isEmailVerified() &&
-        (isAdmin() || existing().ownerUid == request.auth.uid || existing().isSharedPlant == true);
+        (resource == null || isAdmin() || existing().ownerUid == request.auth.uid || existing().isSharedPlant == true);
 
       allow list: if isEmailVerified() &&
         (resource.data.ownerUid == request.auth.uid || resource.data.isSharedPlant == true);
@@ -478,7 +478,7 @@ service cloud.firestore {
     match /materials/{materialId} {
       allow get: if isValidId(materialId) &&
         isEmailVerified() &&
-        (isAdmin() || existing().ownerUid == request.auth.uid || existing().isSharedPlant == true);
+        (resource == null || isAdmin() || existing().ownerUid == request.auth.uid || existing().isSharedPlant == true);
 
       allow list: if isEmailVerified() &&
         (resource.data.ownerUid == request.auth.uid || resource.data.isSharedPlant == true);

@@ -6,11 +6,11 @@ import {
   getDocs,
   onSnapshot,
   query,
+  runTransaction,
   serverTimestamp,
   setDoc,
   updateDoc,
   where,
-  writeBatch,
   type Unsubscribe,
 } from 'firebase/firestore';
 import {
@@ -26,6 +26,27 @@ import type {
   TicketRecord,
   TruckStatus,
 } from '../types';
+
+const activeWriteLocks = new Map<string, Promise<void>>();
+
+async function withDocLock<T>(key: string, task: () => Promise<T>): Promise<T> {
+  const prev = activeWriteLocks.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const next = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const chained = prev.then(() => next);
+  activeWriteLocks.set(key, chained);
+  await prev;
+  try {
+    return await task();
+  } finally {
+    release();
+    if (activeWriteLocks.get(key) === chained) {
+      activeWriteLocks.delete(key);
+    }
+  }
+}
 
 function safeId(raw: string, prefix = 'rec'): string {
   const cleaned = String(raw || '')
@@ -151,7 +172,11 @@ function buildTicketMutableFields(ticket: TicketRecord, actorLabel: string): Rec
   if (ticket.destinationPlace !== undefined) {
     fields.destinationPlace = clampStr(ticket.destinationPlace, 160);
   }
-  if (ticket.loadingType === 'local' || ticket.loadingType === 'export') {
+  if (
+    ticket.loadingType === 'local' ||
+    ticket.loadingType === 'export' ||
+    ticket.loadingType === 'sto'
+  ) {
     fields.loadingType = ticket.loadingType;
   }
   if (ticket.delNoteNumber !== undefined) fields.delNoteNumber = clampStr(ticket.delNoteNumber, 64);
@@ -167,91 +192,103 @@ function buildTicketMutableFields(ticket: TicketRecord, actorLabel: string): Rec
   return fields;
 }
 
-export async function saveGateTicketToFirestore(ticket: TicketRecord): Promise<void> {
+export async function saveGateTicketToFirestore(
+  ticket: TicketRecord,
+  options?: { createOnly?: boolean }
+): Promise<void> {
   const user = auth.currentUser;
   if (!user || !user.emailVerified) return;
 
   const uid = safeId(user.uid, 'usr');
   const ticketId = safeId(ticket.id, 'tk');
   const actorLabel = clampStr(user.displayName || user.email || 'user', 120);
-  const ticketRef = doc(db, 'gate_tickets', ticketId);
-  const piiRef = doc(db, 'gate_tickets', ticketId, 'private', 'driver');
 
-  let existingSnap;
-  try {
-    existingSnap = await getDoc(ticketRef);
-  } catch (error) {
-    handleFirestoreError(error, OperationType.GET, `gate_tickets/${ticketId}`);
-  }
+  return withDocLock(`gate_tickets/${ticketId}`, async () => {
+    const ticketRef = doc(db, 'gate_tickets', ticketId);
+    const piiRef = doc(db, 'gate_tickets', ticketId, 'private', 'driver');
+    const mutableFields = buildTicketMutableFields(ticket, actorLabel);
+    const driverPhone = clampStr(ticket.driverPhone, 32);
+    const iqamaNumber = clampStr(ticket.iqamaNumber, 40);
 
-  const mutableFields = buildTicketMutableFields(ticket, actorLabel);
-  const driverPhone = clampStr(ticket.driverPhone, 32);
-  const iqamaNumber = clampStr(ticket.iqamaNumber, 40);
-
-  if (!existingSnap.exists()) {
-    const createPayload: Record<string, unknown> = {
-      id: ticketId,
-      ticketNumber: clampStr(ticket.ticketNumber, 64, ticketId),
-      sequenceNumber: Math.max(0, Math.round(Number(ticket.sequenceNumber) || 0)),
-      date: normalizeDateStr(ticket.date),
-      timeIn: clampStr(ticket.timeIn, 32, '00:00:00'),
-      ownerUid: uid,
-      createdBy: clampStr(ticket.createdBy || actorLabel, 120),
-      ...mutableFields,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    };
-
-    const piiPayload: Record<string, unknown> = {
-      ticketId,
-      ownerUid: uid,
-      driverPhone,
-      ...(iqamaNumber ? { iqamaNumber } : {}),
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    };
+    let currentOp = OperationType.GET;
+    let ticketAlreadyExisted = false;
+    let ticketOwnerUid = uid;
 
     try {
-      const batch = writeBatch(db);
-      batch.set(ticketRef, createPayload);
-      batch.set(piiRef, piiPayload);
-      await batch.commit();
+      await runTransaction(db, async (tx) => {
+        currentOp = OperationType.GET;
+        const existingSnap = await tx.get(ticketRef);
+
+        if (!existingSnap.exists()) {
+          currentOp = OperationType.CREATE;
+          const createPayload: Record<string, unknown> = {
+            id: ticketId,
+            ticketNumber: clampStr(ticket.ticketNumber, 64, ticketId),
+            sequenceNumber: Math.max(0, Math.round(Number(ticket.sequenceNumber) || 0)),
+            date: normalizeDateStr(ticket.date),
+            timeIn: clampStr(ticket.timeIn, 32, '00:00:00'),
+            ownerUid: uid,
+            createdBy: clampStr(ticket.createdBy || actorLabel, 120),
+            ...mutableFields,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          };
+          const piiPayload: Record<string, unknown> = {
+            ticketId,
+            ownerUid: uid,
+            driverPhone,
+            ...(iqamaNumber ? { iqamaNumber } : {}),
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          };
+          tx.set(ticketRef, createPayload);
+          tx.set(piiRef, piiPayload);
+          ticketOwnerUid = uid;
+          ticketAlreadyExisted = false;
+          return;
+        }
+
+        const existingTicketData = existingSnap.data();
+        ticketOwnerUid = clampStr(existingTicketData?.ownerUid || uid, 128);
+        ticketAlreadyExisted = true;
+        if (options?.createOnly) {
+          return;
+        }
+
+        currentOp = OperationType.UPDATE;
+        tx.update(ticketRef, mutableFields);
+      });
     } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, `gate_tickets/${ticketId}`);
+      handleFirestoreError(error, currentOp, `gate_tickets/${ticketId}`);
     }
-    return;
-  }
 
-  try {
-    await updateDoc(ticketRef, mutableFields);
-  } catch (error) {
-    handleFirestoreError(error, OperationType.UPDATE, `gate_tickets/${ticketId}`);
-  }
-
-  // Update driver PII subcollection when authorized (ticket owner or admin)
-  try {
-    const piiSnap = await getDoc(piiRef);
-    const existingTicketData = existingSnap.data();
-    const ticketOwnerUid = clampStr(existingTicketData?.ownerUid || uid, 128);
-    if (piiSnap.exists()) {
-      await updateDoc(piiRef, {
-        driverPhone,
-        ...(iqamaNumber ? { iqamaNumber } : {}),
-        updatedAt: serverTimestamp(),
-      });
-    } else if (ticketOwnerUid === uid) {
-      await setDoc(piiRef, {
-        ticketId,
-        ownerUid: ticketOwnerUid,
-        driverPhone,
-        ...(iqamaNumber ? { iqamaNumber } : {}),
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
+    if (!ticketAlreadyExisted || options?.createOnly) {
+      return;
     }
-  } catch {
-    // Non-owner operators without PII access still save operational gate ticket updates cleanly
-  }
+
+    // Update driver PII subcollection when authorized (ticket owner or admin)
+    try {
+      const piiSnap = await getDoc(piiRef);
+      if (piiSnap.exists()) {
+        await updateDoc(piiRef, {
+          driverPhone,
+          ...(iqamaNumber ? { iqamaNumber } : {}),
+          updatedAt: serverTimestamp(),
+        });
+      } else if (ticketOwnerUid === uid) {
+        await setDoc(piiRef, {
+          ticketId,
+          ownerUid: ticketOwnerUid,
+          driverPhone,
+          ...(iqamaNumber ? { iqamaNumber } : {}),
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      }
+    } catch {
+      // Non-owner operators without PII access still save operational gate ticket updates cleanly
+    }
+  });
 }
 
 export async function deleteGateTicketFromFirestore(ticketId: string): Promise<void> {
@@ -259,19 +296,21 @@ export async function deleteGateTicketFromFirestore(ticketId: string): Promise<v
   if (!user || !user.emailVerified) return;
 
   const cleanId = safeId(ticketId, 'tk');
-  const ticketRef = doc(db, 'gate_tickets', cleanId);
-  const piiRef = doc(db, 'gate_tickets', cleanId, 'private', 'driver');
+  return withDocLock(`gate_tickets/${cleanId}`, async () => {
+    const ticketRef = doc(db, 'gate_tickets', cleanId);
+    const piiRef = doc(db, 'gate_tickets', cleanId, 'private', 'driver');
 
-  try {
     try {
-      await deleteDoc(piiRef);
-    } catch {
-      // Subdoc may not exist or caller may lack subdoc delete access
+      try {
+        await deleteDoc(piiRef);
+      } catch {
+        // Subdoc may not exist or caller may lack subdoc delete access
+      }
+      await deleteDoc(ticketRef);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `gate_tickets/${cleanId}`);
     }
-    await deleteDoc(ticketRef);
-  } catch (error) {
-    handleFirestoreError(error, OperationType.DELETE, `gate_tickets/${cleanId}`);
-  }
+  });
 }
 
 export function subscribeFirestoreTickets(
@@ -310,7 +349,9 @@ export function subscribeFirestoreTickets(
           transporterName: String(d.transporterName || ''),
           destinationPlace: String(d.destinationPlace || ''),
           loadingType:
-            d.loadingType === 'local' || d.loadingType === 'export' ? d.loadingType : undefined,
+            d.loadingType === 'local' || d.loadingType === 'export' || d.loadingType === 'sto'
+              ? d.loadingType
+              : undefined,
           delNoteNumber: typeof d.delNoteNumber === 'string' ? d.delNoteNumber : undefined,
           status: normalizeStatus(d.status),
           loadingSlip: d.loadingSlip as LoadingSlipData | undefined,
@@ -371,57 +412,63 @@ export function subscribeFirestoreTickets(
   );
 }
 
-export async function saveMaterialToFirestore(material: MaterialMasterRecord): Promise<void> {
+export async function saveMaterialToFirestore(
+  material: MaterialMasterRecord,
+  options?: { createOnly?: boolean }
+): Promise<void> {
   const user = auth.currentUser;
   if (!user || !user.emailVerified) return;
 
   const uid = safeId(user.uid, 'usr');
   const materialId = safeId(material.id, 'mat');
   const actorLabel = clampStr(user.displayName || user.email || 'user', 120);
-  const ref = doc(db, 'materials', materialId);
 
-  let snap;
-  try {
-    snap = await getDoc(ref);
-  } catch (error) {
-    handleFirestoreError(error, OperationType.GET, `materials/${materialId}`);
-  }
+  return withDocLock(`materials/${materialId}`, async () => {
+    const ref = doc(db, 'materials', materialId);
+    const ratio = Number(material.palletRatio);
+    const safeRatio = Number.isFinite(ratio) && ratio > 0 && ratio <= 10000 ? ratio : 1;
+    const mutableFields: Record<string, unknown> = {
+      materialName: clampStr(material.materialName, 160, 'MATERIAL'),
+      packType: clampStr(material.packType, 40, 'Rolls'),
+      palletRatio: safeRatio,
+      isSharedPlant: true,
+      updatedBy: clampStr(material.updatedBy || actorLabel, 120),
+      updatedAt: serverTimestamp(),
+    };
+    if (material.remarks !== undefined) {
+      mutableFields.remarks = clampStr(material.remarks, 300);
+    }
 
-  const ratio = Number(material.palletRatio);
-  const safeRatio = Number.isFinite(ratio) && ratio > 0 && ratio <= 10000 ? ratio : 1;
-  const mutableFields: Record<string, unknown> = {
-    materialName: clampStr(material.materialName, 160, 'MATERIAL'),
-    packType: clampStr(material.packType, 40, 'Rolls'),
-    palletRatio: safeRatio,
-    isSharedPlant: true,
-    updatedBy: clampStr(material.updatedBy || actorLabel, 120),
-    updatedAt: serverTimestamp(),
-  };
-  if (material.remarks !== undefined) {
-    mutableFields.remarks = clampStr(material.remarks, 300);
-  }
-
-  if (!snap.exists()) {
+    let currentOp = OperationType.GET;
     try {
-      await setDoc(ref, {
-        id: materialId,
-        ownerUid: uid,
-        createdBy: clampStr(material.createdBy || actorLabel, 120),
-        ...mutableFields,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
+      await runTransaction(db, async (tx) => {
+        currentOp = OperationType.GET;
+        const snap = await tx.get(ref);
+
+        if (!snap.exists()) {
+          currentOp = OperationType.CREATE;
+          tx.set(ref, {
+            id: materialId,
+            ownerUid: uid,
+            createdBy: clampStr(material.createdBy || actorLabel, 120),
+            ...mutableFields,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+          return;
+        }
+
+        if (options?.createOnly) {
+          return;
+        }
+
+        currentOp = OperationType.UPDATE;
+        tx.update(ref, mutableFields);
       });
     } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, `materials/${materialId}`);
+      handleFirestoreError(error, currentOp, `materials/${materialId}`);
     }
-    return;
-  }
-
-  try {
-    await updateDoc(ref, mutableFields);
-  } catch (error) {
-    handleFirestoreError(error, OperationType.UPDATE, `materials/${materialId}`);
-  }
+  });
 }
 
 export async function deleteMaterialFromFirestore(materialId: string): Promise<void> {
@@ -429,11 +476,13 @@ export async function deleteMaterialFromFirestore(materialId: string): Promise<v
   if (!user || !user.emailVerified) return;
 
   const cleanId = safeId(materialId, 'mat');
-  try {
-    await deleteDoc(doc(db, 'materials', cleanId));
-  } catch (error) {
-    handleFirestoreError(error, OperationType.DELETE, `materials/${cleanId}`);
-  }
+  return withDocLock(`materials/${cleanId}`, async () => {
+    try {
+      await deleteDoc(doc(db, 'materials', cleanId));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `materials/${cleanId}`);
+    }
+  });
 }
 
 export async function importMaterialsBatchToFirestore(
@@ -502,7 +551,7 @@ export async function syncMissingRecordsToFirestore(
     for (const tk of backendTickets) {
       const id = safeId(tk.id, 'tk');
       if (!existingTicketIds.has(id)) {
-        await saveGateTicketToFirestore(tk).catch(() => {});
+        await saveGateTicketToFirestore(tk, { createOnly: true }).catch(() => {});
       }
     }
   } catch {
@@ -517,7 +566,7 @@ export async function syncMissingRecordsToFirestore(
     for (const mat of backendMaterials) {
       const id = safeId(mat.id, 'mat');
       if (!existingMaterialIds.has(id)) {
-        await saveMaterialToFirestore(mat).catch(() => {});
+        await saveMaterialToFirestore(mat, { createOnly: true }).catch(() => {});
       }
     }
   } catch {

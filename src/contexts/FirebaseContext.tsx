@@ -79,6 +79,9 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   >(new Map());
   const syncedTicketVersionsRef = useRef<Map<string, number>>(new Map());
   const syncedMaterialVersionsRef = useRef<Map<string, number>>(new Map());
+  const lastPushedTicketUpdatedAtRef = useRef<Map<string, number>>(new Map());
+  const lastPushedMaterialUpdatedAtRef = useRef<Map<string, number>>(new Map());
+  const syncSnapshotInFlightRef = useRef<Promise<void> | null>(null);
 
   const isFirestoreActive = Boolean(
     firebaseAuthReady && firebaseUser && firebaseUser.emailVerified
@@ -232,20 +235,51 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
       if (!auth.currentUser || !auth.currentUser.emailVerified) return;
 
-      // Initial seed if Firestore doesn't have these records yet
-      await syncMissingRecordsToFirestore(backendTickets, backendMaterials);
-
-      // Push any backend records whose updatedAt is strictly newer than Firestore's copy
-      for (const tk of backendTickets) {
-        const fsUpdatedAt = syncedTicketVersionsRef.current.get(tk.id);
-        if (fsUpdatedAt !== undefined && (tk.updatedAt || 0) > fsUpdatedAt + 2000) {
-          await saveGateTicketToFirestore(tk).catch(() => {});
-        }
+      if (syncSnapshotInFlightRef.current) {
+        await syncSnapshotInFlightRef.current;
+        return;
       }
-      for (const mat of backendMaterials) {
-        const fsUpdatedAt = syncedMaterialVersionsRef.current.get(mat.id);
-        if (fsUpdatedAt !== undefined && (mat.updatedAt || 0) > fsUpdatedAt + 2000) {
-          await saveMaterialToFirestore(mat).catch(() => {});
+
+      const run = (async () => {
+        // Initial seed if Firestore doesn't have these records yet
+        await syncMissingRecordsToFirestore(backendTickets, backendMaterials);
+
+        // Push any backend records whose backend updatedAt advanced since our last push
+        // and is newer than Firestore's copy (guards against container/server clock skew)
+        for (const tk of backendTickets) {
+          const backendUpdatedAt = tk.updatedAt || 0;
+          const lastPushed = lastPushedTicketUpdatedAtRef.current.get(tk.id) ?? 0;
+          const fsUpdatedAt = syncedTicketVersionsRef.current.get(tk.id);
+          if (
+            fsUpdatedAt !== undefined &&
+            backendUpdatedAt > lastPushed &&
+            backendUpdatedAt > fsUpdatedAt + 2000
+          ) {
+            lastPushedTicketUpdatedAtRef.current.set(tk.id, backendUpdatedAt);
+            await saveGateTicketToFirestore(tk).catch(() => {});
+          }
+        }
+        for (const mat of backendMaterials) {
+          const backendUpdatedAt = mat.updatedAt || 0;
+          const lastPushed = lastPushedMaterialUpdatedAtRef.current.get(mat.id) ?? 0;
+          const fsUpdatedAt = syncedMaterialVersionsRef.current.get(mat.id);
+          if (
+            fsUpdatedAt !== undefined &&
+            backendUpdatedAt > lastPushed &&
+            backendUpdatedAt > fsUpdatedAt + 2000
+          ) {
+            lastPushedMaterialUpdatedAtRef.current.set(mat.id, backendUpdatedAt);
+            await saveMaterialToFirestore(mat).catch(() => {});
+          }
+        }
+      })();
+
+      syncSnapshotInFlightRef.current = run;
+      try {
+        await run;
+      } finally {
+        if (syncSnapshotInFlightRef.current === run) {
+          syncSnapshotInFlightRef.current = null;
         }
       }
     },

@@ -433,7 +433,7 @@ export const StorageService = {
       `"${t.iqamaNumber || ''}"`,
       `"${t.transporterName || ''}"`,
       `"${t.destinationPlace || ''}"`,
-      resolveLoadingType(t) === 'export' ? 'EXPORT' : 'LOCAL',
+      resolveLoadingType(t).toUpperCase(),
       formatStatus(t.status),
       t.loadingSlip?.delNoteNumber || '',
       `"${t.loadingSlip?.loadedBy || t.loadingSlip?.checkedBy || ''}"`,

@@ -37,6 +37,7 @@ export function generateDailyReportPDF(
   const activeLoadingTrucks = dayTickets.filter((t) => t.status !== 'cancelled');
   const localTrucksCount = activeLoadingTrucks.filter((t) => resolveLoadingType(t) === 'local').length;
   const exportTrucksCount = activeLoadingTrucks.filter((t) => resolveLoadingType(t) === 'export').length;
+  const stoTrucksCount = activeLoadingTrucks.filter((t) => resolveLoadingType(t) === 'sto').length;
 
   const totalQty = dayTickets.reduce((acc, t) => acc + (t.loadingSlip?.totalQty || 0), 0);
   const totalPallets = dayTickets.reduce((acc, t) => acc + (t.loadingSlip?.totalPallets || 0), 0);
@@ -115,12 +116,13 @@ export function generateDailyReportPDF(
   });
   y += 15.5;
 
-  // Row 2: Total Truck Loading Breakdown (Local & Export)
-  const cardW2 = (contentW - cardGap * 2) / 3;
+  // Row 2: Total Truck Loading Breakdown (Local, Export & STO)
+  const cardW2 = (contentW - cardGap * 3) / 4;
   const truckCards = [
     { label: 'TOTAL TRUCK LOADING', value: String(activeLoadingTrucks.length), bg: [248, 250, 252], border: [148, 163, 184], text: [15, 23, 42] },
     { label: 'LOCAL TRUCKS', value: String(localTrucksCount), bg: [236, 253, 245], border: [110, 231, 183], text: [4, 120, 87] },
     { label: 'EXPORT TRUCKS', value: String(exportTrucksCount), bg: [238, 242, 255], border: [165, 180, 252], text: [67, 56, 202] },
+    { label: 'STO TRUCKS', value: String(stoTrucksCount), bg: [255, 251, 235], border: [252, 211, 77], text: [180, 83, 9] },
   ] as const;
 
   truckCards.forEach((c, idx) => {
@@ -200,7 +202,8 @@ export function generateDailyReportPDF(
       doc.setLineWidth(0.2);
       doc.rect(margin, y, contentW, rowH, 'D');
 
-      const loadingTypeTag = resolveLoadingType(t) === 'export' ? 'EXPORT' : 'LOCAL';
+      const resolvedType = resolveLoadingType(t);
+      const loadingTypeTag = resolvedType === 'export' ? 'EXPORT' : resolvedType === 'sto' ? 'STO' : 'LOCAL';
       const qtyText = t.loadingSlip
         ? `${t.loadingSlip.totalQty} Qty | ${t.loadingSlip.totalPallets} P | ${t.loadingSlip.totalLooseRolls} R`
         : '—';
@@ -242,7 +245,7 @@ export function generateDailyReportPDF(
       doc.setTextColor(15, 23, 42);
       x += cols[4].w;
 
-      // 5: Destination + [LOCAL/EXPORT]
+      // 5: Destination + [LOCAL/EXPORT/STO]
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(7);
       doc.text(truncateText(doc, t.destinationPlace || '—', cols[5].w - 3), x + 1.5, y + 3.8);
@@ -250,6 +253,8 @@ export function generateDailyReportPDF(
       doc.setFontSize(6.3);
       if (loadingTypeTag === 'EXPORT') {
         doc.setTextColor(67, 56, 202);
+      } else if (loadingTypeTag === 'STO') {
+        doc.setTextColor(180, 83, 9);
       } else {
         doc.setTextColor(4, 120, 87);
       }
@@ -301,7 +306,7 @@ export function generateDailyReportPDF(
   doc.setFontSize(8);
   doc.setTextColor(30, 41, 59);
   doc.text(
-    `TRUCK LOADING: Total ${activeLoadingTrucks.length} (Local: ${localTrucksCount} | Export: ${exportTrucksCount})`,
+    `TRUCK LOADING: Total ${activeLoadingTrucks.length} (Local: ${localTrucksCount} | Export: ${exportTrucksCount} | STO: ${stoTrucksCount})`,
     margin + 3,
     y + 5.8
   );
