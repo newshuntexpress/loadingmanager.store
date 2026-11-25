@@ -575,11 +575,8 @@ export function isStaticNoBackendError(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false;
   const status = (err as { status?: unknown }).status;
   const msg = String((err as { message?: unknown }).message || '').toLowerCase();
-  if (status === 404 || status === 405) return true;
-  if (
-    status === 500 &&
-    (msg.includes('non-json') || msg.includes('unexpected empty'))
-  ) {
+  if (status === 404 || status === 405 || status === 501) return true;
+  if (msg.includes('non-json') || msg.includes('unexpected empty')) {
     return true;
   }
   return false;

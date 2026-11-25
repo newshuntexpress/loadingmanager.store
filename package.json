@@ -63,5 +63,8 @@
   },
   "trustedDependencies": [
     "better-sqlite3"
-  ]
+  ],
+  "overrides": {
+    "@grpc/grpc-js": ">=1.14.7"
+  }
 }

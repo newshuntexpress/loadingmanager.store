@@ -504,37 +504,53 @@ export const ApiClient = {
     email?: string;
     password: string;
   }): Promise<{ user: AuthUser; csrfToken: string }> {
-    const res = await request<{ user: AuthUser; csrfToken: string; sessionToken?: string }>(
-      '/api/auth/setup',
-      {
-        method: 'POST',
-        body: JSON.stringify(payload),
-      },
-      true
-    );
-    persistLoginState({
-      user: res.user,
-      csrfToken: res.csrfToken,
-      sessionToken: res.sessionToken ?? getActiveSessionToken(),
-    });
-    return res;
+    try {
+      const res = await request<{ user: AuthUser; csrfToken: string; sessionToken?: string }>(
+        '/api/auth/setup',
+        {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        },
+        true
+      );
+      staticFirebaseOnlyMode = false;
+      persistLoginState({
+        user: res.user,
+        csrfToken: res.csrfToken,
+        sessionToken: res.sessionToken ?? getActiveSessionToken(),
+      });
+      return res;
+    } catch (err) {
+      if (isStaticNoBackendError(err)) {
+        staticFirebaseOnlyMode = true;
+      }
+      throw err;
+    }
   },
 
   async login(username: string, password: string): Promise<{ user: AuthUser; csrfToken: string }> {
-    const res = await request<{ user: AuthUser; csrfToken: string; sessionToken?: string }>(
-      '/api/auth/login',
-      {
-        method: 'POST',
-        body: JSON.stringify({ username, password }),
-      },
-      true
-    );
-    persistLoginState({
-      user: res.user,
-      csrfToken: res.csrfToken,
-      sessionToken: res.sessionToken ?? getActiveSessionToken(),
-    });
-    return res;
+    try {
+      const res = await request<{ user: AuthUser; csrfToken: string; sessionToken?: string }>(
+        '/api/auth/login',
+        {
+          method: 'POST',
+          body: JSON.stringify({ username, password }),
+        },
+        true
+      );
+      staticFirebaseOnlyMode = false;
+      persistLoginState({
+        user: res.user,
+        csrfToken: res.csrfToken,
+        sessionToken: res.sessionToken ?? getActiveSessionToken(),
+      });
+      return res;
+    } catch (err) {
+      if (isStaticNoBackendError(err)) {
+        staticFirebaseOnlyMode = true;
+      }
+      throw err;
+    }
   },
 
   async loginWithFirebase(idToken: string): Promise<{ user: AuthUser; csrfToken: string }> {
@@ -574,7 +590,13 @@ export const ApiClient = {
 
   async logout(): Promise<void> {
     try {
-      await request('/api/auth/logout', { method: 'POST' }, true);
+      if (!staticFirebaseOnlyMode) {
+        await request('/api/auth/logout', { method: 'POST' }, true);
+      }
+    } catch (err) {
+      if (!isStaticNoBackendError(err)) {
+        throw err;
+      }
     } finally {
       clearPersistedLoginState();
       await signOutFromFirebase().catch(() => {});
@@ -1151,6 +1173,7 @@ export const ApiClient = {
   },
 
   async migrateLegacyLocalStorageIfNeeded(): Promise<void> {
+    if (staticFirebaseOnlyMode) return;
     try {
       const ticketsRaw = localStorage.getItem('mat_loading_tickets_v1');
       const driversRaw = localStorage.getItem('mat_loading_drivers_v1');

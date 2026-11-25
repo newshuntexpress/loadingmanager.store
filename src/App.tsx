@@ -657,10 +657,17 @@ export default function App() {
   // Restore Firebase session automatically in static GitHub Pages mode once Firebase Auth hydrates
   useEffect(() => {
     if (authLoading || !isStaticFirebaseOnlyMode() || !firebaseAuthReady) return;
-    if (firebaseUser && firebaseUser.emailVerified && !currentUser) {
+    if (firebaseUser && firebaseUser.emailVerified) {
       const restored = buildAuthUserFromFirebase(firebaseUser, firestoreProfile);
-      setCurrentUser(restored);
-      setActiveTab(getDefaultTabForUser(restored));
+      if (!currentUser) {
+        setCurrentUser(restored);
+        setActiveTab(getDefaultTabForUser(restored));
+      } else if (
+        currentUser.id === restored.id &&
+        currentUser.roleName !== restored.roleName
+      ) {
+        setCurrentUser(restored);
+      }
     }
   }, [authLoading, firebaseAuthReady, firebaseUser, firestoreProfile, currentUser]);
 
@@ -1118,6 +1125,7 @@ export default function App() {
         {updateBanner}
         <LoginView
           needsSetup={needsSetup}
+          staticFirebaseMode={isStaticFirebaseOnlyMode()}
           branding={publicBranding}
           onAuthenticated={(user) => {
             setAuthLoading(false);
