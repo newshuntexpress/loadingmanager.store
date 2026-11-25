@@ -11,6 +11,5 @@ data/
 *.db
 *.db-wal
 *.db-shm
-.dist-wp-tmp/
 server.js
 

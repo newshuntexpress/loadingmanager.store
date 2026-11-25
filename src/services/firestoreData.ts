@@ -484,7 +484,7 @@ export function subscribeFirestoreMaterials(
 
 /**
  * One-time safe backfill: when an authenticated Firebase user signs in and Firestore
- * has fewer/no records compared to existing SQLite/WordPress records, push missing items
+ * has fewer/no records compared to existing SQLite backend records, push missing items
  * cleanly into Firestore without overwriting existing Firestore documents.
  */
 export async function syncMissingRecordsToFirestore(

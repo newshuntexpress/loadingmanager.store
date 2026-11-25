@@ -42,107 +42,11 @@ import {
 declare global {
   interface Window {
     __GATEPASS_API_BASE__?: string;
-    __GATEPASS_WP_REST_BASE__?: string;
-    __GATEPASS_WP_AJAX_BASE__?: string;
   }
-}
-
-export function isWordPressAjaxMode(): boolean {
-  return (
-    typeof window !== 'undefined' &&
-    typeof window.__GATEPASS_WP_AJAX_BASE__ === 'string' &&
-    window.__GATEPASS_WP_AJAX_BASE__.trim().length > 0
-  );
-}
-
-export function isWordPressRestMode(): boolean {
-  return (
-    typeof window !== 'undefined' &&
-    typeof window.__GATEPASS_WP_REST_BASE__ === 'string' &&
-    window.__GATEPASS_WP_REST_BASE__.trim().length > 0
-  );
-}
-
-function normalizeSameOriginUrl(rawUrl: string): string {
-  const trimmed = rawUrl.trim();
-  if (!trimmed || typeof window === 'undefined') return trimmed;
-  if (!/^https?:\/\//i.test(trimmed)) return trimmed;
-  try {
-    const parsed = new URL(trimmed);
-    const currentHost = window.location.hostname.replace(/^www\./i, '').toLowerCase();
-    const targetHost = parsed.hostname.replace(/^www\./i, '').toLowerCase();
-    if (currentHost && currentHost === targetHost) {
-      return `${parsed.pathname}${parsed.search}`;
-    }
-    if (window.location.protocol === 'https:' && parsed.protocol === 'http:') {
-      parsed.protocol = 'https:';
-      return parsed.toString();
-    }
-  } catch {
-    // Keep trimmed URL as-is
-  }
-  return trimmed;
-}
-
-function buildWordPressAjaxUrl(wpAjaxBase: string, pathname: string, sessionToken: string | null): string {
-  const base = normalizeSameOriginUrl(wpAjaxBase);
-  const sep = base.includes('?') ? '&' : '?';
-  let ajaxUrl = `${base}${sep}action=gatepass_api&gp_endpoint=${encodeURIComponent(pathname)}`;
-  if (sessionToken) {
-    ajaxUrl += `&_gp_tok=${encodeURIComponent(sessionToken)}`;
-  }
-  return ajaxUrl;
-}
-
-function buildWordPressRestUrl(
-  wpRestBase: string,
-  pathname: string,
-  query: string | undefined,
-  sessionToken: string | null
-): string {
-  const base = normalizeSameOriginUrl(wpRestBase).replace(/\/+$/, '');
-  const joined = `${base}/${pathname}`;
-  let out = query ? (joined.includes('?') ? `${joined}&${query}` : `${joined}?${query}`) : joined;
-  if (sessionToken) {
-    out += `${out.includes('?') ? '&' : '?'}_gp_tok=${encodeURIComponent(sessionToken)}`;
-  }
-  return out;
 }
 
 export function resolveApiUrl(path: string): string {
   if (/^https?:\/\//i.test(path)) return path;
-
-  const cleanPath = path.replace(/^\/+/, '');
-  const routePath = cleanPath.startsWith('api/') ? cleanPath.slice(4) : cleanPath;
-  const [pathname, query] = routePath.split('?');
-
-  const wpAjaxBase =
-    typeof window !== 'undefined' && typeof window.__GATEPASS_WP_AJAX_BASE__ === 'string'
-      ? window.__GATEPASS_WP_AJAX_BASE__.trim()
-      : '';
-
-  if (wpAjaxBase) {
-    const base = normalizeSameOriginUrl(wpAjaxBase);
-    const sep = base.includes('?') ? '&' : '?';
-    let ajaxUrl = `${base}${sep}action=gatepass_api&gp_endpoint=${encodeURIComponent(pathname)}&gp_method=GET`;
-    if (query) {
-      ajaxUrl += `&gp_query=${encodeURIComponent(query)}`;
-    }
-    return ajaxUrl;
-  }
-
-  const wpRestBase =
-    typeof window !== 'undefined' && typeof window.__GATEPASS_WP_REST_BASE__ === 'string'
-      ? window.__GATEPASS_WP_REST_BASE__.trim().replace(/\/+$/, '')
-      : '';
-
-  if (wpRestBase) {
-    const base = normalizeSameOriginUrl(wpRestBase);
-    const joined = `${base}/${pathname}`;
-    if (!query) return joined;
-    return joined.includes('?') ? `${joined}&${query}` : `${joined}?${query}`;
-  }
-
   const base =
     typeof window !== 'undefined' && typeof window.__GATEPASS_API_BASE__ === 'string'
       ? window.__GATEPASS_API_BASE__.trim().replace(/\/+$/, '')
@@ -384,89 +288,31 @@ async function sendTransportRequest(
   url: string,
   options: RequestInit,
   method: string,
-  baseHeaders: Record<string, string>,
-  sessionToken: string | null,
-  csrfToken: string | null
+  baseHeaders: Record<string, string>
 ): Promise<{ res: Response; rawText: string; data: any }> {
-  const cleanPath = url.replace(/^\/+/, '');
-  const routePath = cleanPath.startsWith('api/') ? cleanPath.slice(4) : cleanPath;
-  const [pathname, query] = routePath.split('?');
-
-  const parseBody = async (response: Response) => {
-    const rawText = await response.text().catch(() => '');
-    let data: any = null;
-    if (rawText) {
-      try {
-        data = JSON.parse(rawText);
-      } catch {
-        data = null;
-      }
-    }
-    return { res: response, rawText, data };
-  };
-
-  if (isWordPressAjaxMode()) {
-    const wpAjaxBase = window.__GATEPASS_WP_AJAX_BASE__!.trim();
-    const form = new URLSearchParams();
-    form.set('action', 'gatepass_api');
-    form.set('gp_endpoint', pathname);
-    form.set('gp_method', method);
-    if (query) form.set('gp_query', query);
-    if (sessionToken) form.set('gp_token', sessionToken);
-    if (csrfToken) form.set('gp_csrf', csrfToken);
-    if (typeof options.body === 'string' && options.body.length > 0) {
-      form.set('gp_body', options.body);
-    }
-
-    const ajaxHeaders: Record<string, string> = {
-      ...baseHeaders,
-      'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-    };
-    const ajaxUrl = buildWordPressAjaxUrl(wpAjaxBase, pathname, sessionToken);
-    try {
-      const ajaxRes = await fetch(ajaxUrl, {
-        ...options,
-        method: 'POST',
-        credentials: 'include',
-        headers: ajaxHeaders,
-        body: form.toString(),
-        cache: 'no-store',
-      });
-      const parsed = await parseBody(ajaxRes);
-      // If admin-ajax.php was blocked/redirected by a WP plugin (non-JSON HTML/0/403/404), fall back cleanly to WP REST API
-      if (parsed.data !== null || !isWordPressRestMode()) {
-        return parsed;
-      }
-    } catch (ajaxErr) {
-      if (!isWordPressRestMode()) {
-        throw ajaxErr;
-      }
-    }
-  }
-
   const restHeaders: Record<string, string> = { ...baseHeaders };
   if (options.body && !restHeaders['Content-Type']) {
     restHeaders['Content-Type'] = 'application/json';
   }
 
-  let effectiveMethod = method;
-  if (isWordPressRestMode() && (method === 'PUT' || method === 'PATCH' || method === 'DELETE')) {
-    restHeaders['X-HTTP-Method-Override'] = method;
-    effectiveMethod = 'POST';
-  }
-
-  const resolvedUrl = isWordPressRestMode()
-    ? buildWordPressRestUrl(window.__GATEPASS_WP_REST_BASE__!.trim(), pathname, query, sessionToken)
-    : resolveApiUrl(url);
-
-  const restRes = await fetch(resolvedUrl, {
+  const restRes = await fetch(resolveApiUrl(url), {
     ...options,
-    method: effectiveMethod,
+    method,
     credentials: 'include',
     headers: restHeaders,
     cache: 'no-store',
   });
-  return parseBody(restRes);
+
+  const rawText = await restRes.text().catch(() => '');
+  let data: any = null;
+  if (rawText) {
+    try {
+      data = JSON.parse(rawText);
+    } catch {
+      data = null;
+    }
+  }
+  return { res: restRes, rawText, data };
 }
 
 async function confirmSessionStillInvalid(requestEpoch: number): Promise<boolean> {
@@ -477,21 +323,15 @@ async function confirmSessionStillInvalid(requestEpoch: number): Promise<boolean
     verifySessionInFlight = (async () => {
       try {
         const sessionToken = getActiveSessionToken();
-        const csrfToken = getActiveCsrfToken();
         const headers: Record<string, string> = {};
         if (sessionToken) {
           headers['Authorization'] = `Bearer ${sessionToken}`;
-          if (isWordPressAjaxMode() || isWordPressRestMode()) {
-            headers['X-GatePass-Token'] = sessionToken;
-          }
         }
         const { res, data } = await sendTransportRequest(
           '/api/auth/status',
           { method: 'GET' },
           'GET',
-          headers,
-          sessionToken,
-          csrfToken
+          headers
         );
         if (requestEpoch !== authEpoch) {
           return false;
@@ -499,7 +339,6 @@ async function confirmSessionStillInvalid(requestEpoch: number): Promise<boolean
         if (res.ok && data && typeof data.authenticated === 'boolean') {
           return data.authenticated === false;
         }
-        // Do not force logout on transient 5xx/network HTML responses
         return false;
       } catch {
         return false;
@@ -524,21 +363,15 @@ async function request<T>(url: string, options: RequestInit = {}, skipAuthHooks 
 
   const sessionToken = getActiveSessionToken();
   const csrfToken = getActiveCsrfToken();
-  const wpMode = isWordPressAjaxMode() || isWordPressRestMode();
-  if (sessionToken) {
-    if (!headers['Authorization']) {
-      headers['Authorization'] = `Bearer ${sessionToken}`;
-    }
-    if (wpMode && !headers['X-GatePass-Token']) {
-      headers['X-GatePass-Token'] = sessionToken;
-    }
+  if (sessionToken && !headers['Authorization']) {
+    headers['Authorization'] = `Bearer ${sessionToken}`;
   }
 
   if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS' && csrfToken) {
     headers['X-CSRF-Token'] = csrfToken;
   }
 
-  const { res, data } = await sendTransportRequest(url, options, method, headers, sessionToken, csrfToken);
+  const { res, data } = await sendTransportRequest(url, options, method, headers);
 
   if (!res.ok) {
     const message = data?.error || `Request failed (${res.status})`;
@@ -1548,65 +1381,5 @@ export const ApiClient = {
         body: JSON.stringify(payload),
       }
     );
-  },
-
-  async downloadWordPressFullHtml(): Promise<void> {
-    const token = getActiveSessionToken();
-    const headers: Record<string, string> = {};
-    if (token) {
-      headers['Authorization'] = `Bearer ${token}`;
-      if (isWordPressAjaxMode() || isWordPressRestMode()) {
-        headers['X-GatePass-Token'] = token;
-      }
-    }
-    const res = await fetch(resolveApiUrl('/api/admin/wordpress-full-html'), {
-      method: 'GET',
-      credentials: 'include',
-      headers,
-      cache: 'no-store',
-    });
-    if (!res.ok) {
-      const data = await res.json().catch(() => null);
-      throw new ApiError(data?.error || `Failed to download WordPress HTML (${res.status})`, res.status);
-    }
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = 'gatepass-full-app.html';
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  },
-
-  async downloadWordPressPluginZip(): Promise<void> {
-    const token = getActiveSessionToken();
-    const headers: Record<string, string> = {};
-    if (token) {
-      headers['Authorization'] = `Bearer ${token}`;
-      if (isWordPressAjaxMode() || isWordPressRestMode()) {
-        headers['X-GatePass-Token'] = token;
-      }
-    }
-    const res = await fetch(resolveApiUrl('/api/admin/wordpress-plugin'), {
-      method: 'GET',
-      credentials: 'include',
-      headers,
-      cache: 'no-store',
-    });
-    if (!res.ok) {
-      const data = await res.json().catch(() => null);
-      throw new ApiError(data?.error || `Failed to download WordPress Plugin (${res.status})`, res.status);
-    }
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = 'gatepass-loading-slip-manager.zip';
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
   },
 };

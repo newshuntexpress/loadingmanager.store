@@ -94,7 +94,7 @@ app.use(
 app.use(express.json({ limit: '5mb' }));
 app.use(cookieParser());
 
-// Allow cross-origin requests from WordPress-hosted HTML shells (cookie + Bearer + CSRF)
+// Allow cross-origin requests from configured frontends (cookie + Bearer + CSRF)
 app.use('/api', (req: Request, res: Response, next) => {
   const origin = req.headers.origin;
   if (origin && /^https?:\/\//i.test(origin)) {
@@ -103,7 +103,7 @@ app.use('/api', (req: Request, res: Response, next) => {
     res.setHeader('Access-Control-Allow-Credentials', 'true');
     res.setHeader(
       'Access-Control-Allow-Headers',
-      'Content-Type, Authorization, X-CSRF-Token, X-Background-Poll, X-GatePass-Token, X-HTTP-Method-Override'
+      'Content-Type, Authorization, X-CSRF-Token, X-Background-Poll'
     );
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
   }
@@ -3736,47 +3736,6 @@ function getAppBuildInfo(): { buildId: string; version: string; serverBootAt: nu
 // Public build/version check for automatic live client updates
 app.get('/api/app-version', (_req: Request, res: Response) => {
   res.json({ ok: true, ...getAppBuildInfo() });
-});
-
-// Download full single-file WordPress HTML bundle (Admin only)
-app.get('/api/admin/wordpress-full-html', requireAuth, requirePasswordChanged, requireAdmin, (req: Request, res: Response) => {
-  const htmlPath = path.join(process.cwd(), 'wordpress', 'gatepass-full-app.html');
-  if (!fs.existsSync(htmlPath)) {
-    res.status(404).json({
-      error: 'WordPress full HTML bundle not yet built. Run "npm run build:wordpress" on the server first.',
-    });
-    return;
-  }
-
-  let html = fs.readFileSync(htmlPath, 'utf8');
-  const forwardedProto = String(req.headers['x-forwarded-proto'] || req.protocol || 'https').split(',')[0].trim();
-  const host = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].trim();
-  const requestBase = host ? `${forwardedProto}://${host}` : '';
-  const liveApiBase = (process.env.APP_BASE_URL || requestBase || 'https://loadingmanager.store').replace(/\/+$/, '');
-
-  html = html.replace(
-    /window\.__GATEPASS_API_BASE__\s*=\s*window\.__GATEPASS_API_BASE__\s*\|\|\s*"[^"]*";/,
-    () => `window.__GATEPASS_API_BASE__ = window.__GATEPASS_API_BASE__ || ${JSON.stringify(liveApiBase)};`
-  );
-
-  res.setHeader('Content-Type', 'text/html; charset=utf-8');
-  res.setHeader('Content-Disposition', 'attachment; filename="gatepass-full-app.html"');
-  res.send(html);
-});
-
-// Download complete WordPress Plugin ZIP package (Admin only)
-app.get('/api/admin/wordpress-plugin', requireAuth, requirePasswordChanged, requireAdmin, (_req: Request, res: Response) => {
-  const zipPath = path.join(process.cwd(), 'wordpress', 'gatepass-loading-slip-manager.zip');
-  if (!fs.existsSync(zipPath)) {
-    res.status(404).json({
-      error: 'WordPress plugin ZIP not yet built. Run "npm run build:wordpress" on the server first.',
-    });
-    return;
-  }
-
-  res.setHeader('Content-Type', 'application/zip');
-  res.setHeader('Content-Disposition', 'attachment; filename="gatepass-loading-slip-manager.zip"');
-  res.sendFile(zipPath);
 });
 
 // Health check endpoint for Hostinger / load balancers

@@ -184,7 +184,7 @@ export default function App() {
   } = useFirebase();
   const firestoreBackfilledRef = useRef(false);
 
-  // Authentication State (backed by SQLite/WordPress sessions + Firebase Google Sign-In)
+  // Authentication State (backed by SQLite sessions + Firebase Google Sign-In)
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(() => {
     const persisted = getPersistedLoginState();
     return persisted.isLoggedIn ? persisted.user : null;

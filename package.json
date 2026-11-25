@@ -15,7 +15,6 @@
   "scripts": {
     "dev": "tsx server.ts",
     "build": "vite build",
-    "build:wordpress": "node scripts/build-wordpress-html.mjs",
     "start": "node server.ts",
     "start:prod": "NODE_ENV=production node server.ts",
     "preview": "vite preview",

@@ -4,7 +4,7 @@ Full-stack plant gate queue, dispatch, loading slip (with QR verification & per-
 
 - **Frontend**: React 19, TypeScript, Tailwind CSS v4, Vite
 - **Cloud Database & Auth**: Firebase Auth (Google Sign-In) + Cloud Firestore (`ai-studio-gatepassloadings-9d9c194d-e2fc-43b8-894e-66a3317b3273`)
-- **Backend (Optional / Full-Stack)**: Node.js (v22+), Express, SQLite (`better-sqlite3`), WordPress Plugin
+- **Backend (Optional / Full-Stack)**: Node.js (v22+), Express, SQLite (`better-sqlite3`)
 
 ---
 

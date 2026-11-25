@@ -21,7 +21,8 @@ import {
   PenTool,
   MessageSquare,
   Edit2,
-  Download,
+  GitBranch,
+  Copy,
 } from 'lucide-react';
 
 interface SettingsModalProps {
@@ -64,8 +65,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [sessionIdleMinutes, setSessionIdleMinutes] = useState<number>(settings.sessionIdleMinutes || 30);
   const [gates, setGates] = useState<string[]>([...settings.gates]);
   const [newGateName, setNewGateName] = useState('');
-  const [downloadingWpHtml, setDownloadingWpHtml] = useState(false);
-  const [downloadingWpPlugin, setDownloadingWpPlugin] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const showFeedback = (type: 'success' | 'error', text: string) => {
@@ -528,66 +527,34 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
           )}
 
-          {/* WordPress Plugin & Standalone Export */}
+          {/* GitHub Repository & Cloud Deployment */}
           {isAdmin && (
-            <div className="bg-indigo-50/70 p-3.5 rounded-xl border border-indigo-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div className="min-w-0">
-                <span className="text-xs font-bold text-indigo-950 block">
-                  WordPress Plugin &amp; HTML Export
+                <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                  <GitBranch className="w-3.5 h-3.5 text-slate-700 shrink-0" />
+                  <span>GitHub Repository &amp; Cloud Sync</span>
                 </span>
-                <p className="text-[11px] text-indigo-800">
-                  Download ready-to-install WordPress Plugin ZIP or self-contained HTML bundle.
+                <p className="text-[11px] text-slate-600 mt-0.5 break-all">
+                  Connected repo: <span className="font-mono font-semibold text-slate-800">newshuntexpress/loadingmanager.store</span>
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2 shrink-0">
                 <button
                   type="button"
-                  disabled={downloadingWpHtml}
                   onClick={async () => {
-                    setDownloadingWpHtml(true);
+                    const repoUrl = 'https://github.com/newshuntexpress/loadingmanager.store.git';
                     try {
-                      await ApiClient.downloadWordPressFullHtml();
-                      showFeedback('success', 'Downloaded WordPress Full HTML bundle (gatepass-full-app.html).');
-                    } catch (err: any) {
-                      showFeedback('error', err?.message || 'Unable to download WordPress full HTML bundle.');
-                    } finally {
-                      setDownloadingWpHtml(false);
+                      await navigator.clipboard.writeText(repoUrl);
+                      showFeedback('success', 'Copied GitHub repository URL to clipboard.');
+                    } catch {
+                      showFeedback('error', `Repository URL: ${repoUrl}`);
                     }
                   }}
-                  className="app-btn-sm bg-emerald-700 hover:bg-emerald-600 text-white border border-emerald-500"
+                  className="app-btn-sm bg-slate-800 hover:bg-slate-700 text-white border border-slate-600"
                 >
-                  {downloadingWpHtml ? (
-                    <Loader2 className="w-3.5 h-3.5 shrink-0 animate-spin" />
-                  ) : (
-                    <Download className="w-3.5 h-3.5 shrink-0" />
-                  )}
-                  <span>Download WP Full HTML</span>
-                </button>
-                <button
-                  type="button"
-                  disabled={downloadingWpPlugin}
-                  onClick={async () => {
-                    setDownloadingWpPlugin(true);
-                    try {
-                      await ApiClient.downloadWordPressPluginZip();
-                      showFeedback(
-                        'success',
-                        'Downloaded WordPress Plugin ZIP (gatepass-loading-slip-manager.zip).'
-                      );
-                    } catch (err: any) {
-                      showFeedback('error', err?.message || 'Unable to download WordPress Plugin ZIP.');
-                    } finally {
-                      setDownloadingWpPlugin(false);
-                    }
-                  }}
-                  className="app-btn-sm bg-indigo-700 hover:bg-indigo-600 text-white border border-indigo-500"
-                >
-                  {downloadingWpPlugin ? (
-                    <Loader2 className="w-3.5 h-3.5 shrink-0 animate-spin" />
-                  ) : (
-                    <Download className="w-3.5 h-3.5 shrink-0" />
-                  )}
-                  <span>Download WP Plugin (.zip)</span>
+                  <Copy className="w-3.5 h-3.5 shrink-0" />
+                  <span>Copy Git URL</span>
                 </button>
               </div>
             </div>
