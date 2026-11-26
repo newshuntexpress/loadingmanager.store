@@ -410,3 +410,50 @@ export function requireAnyPermission(permissionKeys: string[]) {
     res.status(403).json({ error: `Forbidden: Missing required operational permission.` });
   };
 }
+
+export function getUserAllowedPlants(user: Pick<SafeUser, 'roleName' | 'allowedPlants'>): string[] {
+  if (user.roleName === 'admin') return ['ALL'];
+  const list = Array.isArray(user.allowedPlants) ? user.allowedPlants : [];
+  const cleaned = list
+    .map((p) => String(p || '').trim().toUpperCase().replace(/[^A-Z0-9_-]/g, ''))
+    .filter(Boolean);
+  if (cleaned.includes('ALL')) return ['ALL'];
+  return cleaned.length > 0 ? cleaned : ['RIYADH'];
+}
+
+export function userCanAccessPlant(
+  user: Pick<SafeUser, 'roleName' | 'allowedPlants'>,
+  plantId: string | null | undefined
+): boolean {
+  const allowed = getUserAllowedPlants(user);
+  if (allowed.includes('ALL')) return true;
+  const target = String(plantId || 'RIYADH').trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '') || 'RIYADH';
+  return allowed.includes(target);
+}
+
+export function resolveAuthorizedPlantForUser(
+  user: Pick<SafeUser, 'roleName' | 'allowedPlants' | 'defaultPlantId'>,
+  requestedPlantId?: unknown
+): string | null {
+  const allowed = getUserAllowedPlants(user);
+  const reqStr =
+    typeof requestedPlantId === 'string'
+      ? requestedPlantId.trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '')
+      : '';
+
+  if (reqStr && reqStr !== 'ALL') {
+    if (allowed.includes('ALL') || allowed.includes(reqStr)) {
+      return reqStr;
+    }
+    return null;
+  }
+
+  if (allowed.includes('ALL')) {
+    const def = String(user.defaultPlantId || '').trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '');
+    return def && def !== 'ALL' ? def : 'RIYADH';
+  }
+
+  const def = String(user.defaultPlantId || '').trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '');
+  return def && allowed.includes(def) ? def : allowed[0] || 'RIYADH';
+}
+

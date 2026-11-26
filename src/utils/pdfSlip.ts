@@ -2,7 +2,7 @@ import { jsPDF } from 'jspdf';
 import QRCode from 'qrcode';
 import { TicketRecord, CompanySettings } from '../types';
 import { formatSaudiPhoneNumber } from './whatsapp';
-import { formatDisplayDate } from '../services/storage';
+import { formatDisplayDate, resolveSettingsForPlant } from '../services/storage';
 import { drawPdfLogo } from './logo';
 import { buildDriverLiveStatusUrl } from './driverStatusUrl';
 
@@ -119,7 +119,14 @@ function drawSingleSlipCopy(
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(6.8);
   doc.setTextColor(65, 65, 65);
-  const infoLine = [settings.address, settings.phone ? `Ph: ${settings.phone}` : ''].filter(Boolean).join(' | ');
+  const infoLine = [
+    settings.address,
+    settings.phone ? `Ph: ${settings.phone}` : '',
+    settings.email ? settings.email : '',
+    settings.gstin ? `Tax/GSTIN: ${settings.gstin}` : '',
+  ]
+    .filter(Boolean)
+    .join(' | ');
   doc.text(truncateText(doc, infoLine, maxTextW + 2), textX, headerY + 7.8);
 
   // Right header badge + title
@@ -510,6 +517,7 @@ export function generateLoadingSlipPDF(
   storeInchargeFullName?: string,
   storeInchargeSignatureDataUrl?: string
 ): void {
+  const plantSettings = resolveSettingsForPlant(settings, ticket.plantId);
   const doc = new jsPDF({
     orientation: 'portrait',
     unit: 'mm',
@@ -520,7 +528,7 @@ export function generateLoadingSlipPDF(
   drawSingleSlipCopy(
     doc,
     ticket,
-    settings,
+    plantSettings,
     'Original (Office Use)',
     12,
     storeInchargeFullName,
@@ -547,7 +555,7 @@ export function generateLoadingSlipPDF(
   drawSingleSlipCopy(
     doc,
     ticket,
-    settings,
+    plantSettings,
     'Duplicate (For Forklift Operator)',
     155,
     storeInchargeFullName,
@@ -562,6 +570,7 @@ export function generateLoadingSlipPDF(
 }
 
 export function generateGateTokenPDF(ticket: TicketRecord, settings: CompanySettings): void {
+  const plantSettings = resolveSettingsForPlant(settings, ticket.plantId);
   const doc = new jsPDF({
     orientation: 'portrait',
     unit: 'mm',
@@ -571,20 +580,20 @@ export function generateGateTokenPDF(ticket: TicketRecord, settings: CompanySett
   const w = 80;
   let y = 7;
 
-  if (drawPdfLogo(doc, settings.logoDataUrl, w / 2 - 7, y - 2, 14, 10)) {
+  if (drawPdfLogo(doc, plantSettings.logoDataUrl, w / 2 - 7, y - 2, 14, 10)) {
     y += 10.5;
   }
 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(9);
   doc.setTextColor(0, 0, 0);
-  doc.text(truncateText(doc, settings.companyName, 72), w / 2, y, { align: 'center' });
+  doc.text(truncateText(doc, plantSettings.companyName, 72), w / 2, y, { align: 'center' });
   y += 4;
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(6.5);
   doc.setTextColor(80, 80, 80);
-  doc.text(truncateText(doc, settings.address, 72), w / 2, y, { align: 'center' });
+  doc.text(truncateText(doc, plantSettings.address, 72), w / 2, y, { align: 'center' });
   y += 4;
 
   doc.setFillColor(0, 0, 0);

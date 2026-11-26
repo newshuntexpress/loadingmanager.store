@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { TicketRecord, CompanySettings } from '../types';
 import { formatSaudiPhoneNumber } from '../utils/whatsapp';
-import { formatDisplayDate } from '../services/storage';
+import { formatDisplayDate, resolveSettingsForPlant } from '../services/storage';
 import { generateGateTokenPDF } from '../utils/pdfSlip';
 import { Printer, Download, X, CheckCircle2, ShieldCheck } from 'lucide-react';
 
@@ -19,11 +19,12 @@ export const TicketPrintView: React.FC<TicketPrintViewProps> = ({
   autoPrint = false,
   onClose,
 }) => {
+  const plantSettings = resolveSettingsForPlant(settings, ticket.plantId);
   const [pdfNotice, setPdfNotice] = useState<string | null>(null);
   const autoPrintedRef = useRef(false);
 
   const handleSavePDF = () => {
-    generateGateTokenPDF(ticket, settings);
+    generateGateTokenPDF(ticket, plantSettings);
     setPdfNotice('Gate Token PDF downloaded!');
     setTimeout(() => setPdfNotice(null), 4000);
   };
@@ -45,12 +46,12 @@ export const TicketPrintView: React.FC<TicketPrintViewProps> = ({
     setTimeout(() => {
       window.removeEventListener('beforeprint', onBeforePrint);
       if (!printDialogOpened) {
-        generateGateTokenPDF(ticket, settings);
+        generateGateTokenPDF(ticket, plantSettings);
         setPdfNotice('Gate Token PDF downloaded (preview frame restricts browser print popup).');
         setTimeout(() => setPdfNotice(null), 5000);
       }
     }, 250);
-  }, [ticket, settings]);
+  }, [ticket, plantSettings]);
 
   useEffect(() => {
     if (!autoPrint || autoPrintedRef.current) return;
@@ -103,10 +104,10 @@ export const TicketPrintView: React.FC<TicketPrintViewProps> = ({
       {/* Gate Token Slip - compact 80mm receipt style */}
       <div className="print-ticket-container bg-white text-black w-full max-w-sm rounded-xl p-5 shadow-2xl border-2 border-dashed border-gray-400 font-sans print:border-none print:shadow-none print:p-2 print:max-w-[80mm]">
         <div className="text-center pb-3 border-b-2 border-black">
-          {settings.logoDataUrl ? (
+          {plantSettings.logoDataUrl ? (
             <img
-              src={settings.logoDataUrl}
-              alt={settings.companyName}
+              src={plantSettings.logoDataUrl}
+              alt={plantSettings.companyName}
               className="h-12 w-auto max-w-[140px] object-contain mx-auto mb-1"
             />
           ) : (
@@ -114,8 +115,8 @@ export const TicketPrintView: React.FC<TicketPrintViewProps> = ({
               <ShieldCheck className="w-5 h-5" />
             </div>
           )}
-          <h2 className="text-base font-black uppercase tracking-tight">{settings.companyName}</h2>
-          <p className="text-[10px] text-gray-600">{settings.address}</p>
+          <h2 className="text-base font-black uppercase tracking-tight">{plantSettings.companyName}</h2>
+          <p className="text-[10px] text-gray-600">{plantSettings.address}</p>
           <div className="mt-1 bg-black text-white text-[11px] font-extrabold uppercase py-0.5 px-3 rounded inline-block">
             GATE INWARD & LOADING TOKEN
           </div>

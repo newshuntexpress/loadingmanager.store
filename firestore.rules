@@ -28,18 +28,55 @@ service cloud.firestore {
       return isSignedIn() && request.auth.token.email_verified == true;
     }
 
+    function cleanEmailLower() {
+      return isSignedIn() && request.auth.token.email is string
+        ? request.auth.token.email.lower()
+        : '';
+    }
+
+    function callerEmailKey() {
+      return cleanEmailLower()
+        .replace('[@]', '_at_')
+        .replace('[.]', '_dot_')
+        .replace('[^a-z0-9_-]', '_');
+    }
+
     function isOwner(userId) {
       return isSignedIn() && request.auth.uid == userId;
     }
 
     function isBootstrappedAdmin() {
-      return isEmailVerified() && request.auth.token.email == 'newshuntexpress@gmail.com';
+      return isEmailVerified() && cleanEmailLower() == 'newshuntexpress@gmail.com';
+    }
+
+    function hasActiveAllowlistDoc() {
+      return isEmailVerified() &&
+        callerEmailKey().size() >= 3 &&
+        exists(/databases/$(database)/documents/authorized_emails/$(callerEmailKey())) &&
+        get(/databases/$(database)/documents/authorized_emails/$(callerEmailKey())).data.isActive == true;
     }
 
     function isAdmin() {
       return isEmailVerified() && (
         isBootstrappedAdmin() ||
-        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        (
+          hasActiveAllowlistDoc() &&
+          get(/databases/$(database)/documents/authorized_emails/$(callerEmailKey())).data.roleName == 'admin'
+        )
+      );
+    }
+
+    function isActiveAllowlisted() {
+      return isEmailVerified() && (isBootstrappedAdmin() || isAdmin() || hasActiveAllowlistDoc());
+    }
+
+    function canAccessPlant(plantId) {
+      return isAdmin() || (
+        hasActiveAllowlistDoc() && (
+          !('allowedPlants' in get(/databases/$(database)/documents/authorized_emails/$(callerEmailKey())).data) ||
+          get(/databases/$(database)/documents/authorized_emails/$(callerEmailKey())).data.allowedPlants.hasAny(['ALL', plantId])
+        )
       );
     }
 
@@ -56,6 +93,13 @@ service cloud.firestore {
           'ex_factory_operator',
           'security_guard'
         ];
+    }
+
+    function isValidPlantCode(plantId) {
+      return plantId is string &&
+        plantId.size() >= 1 &&
+        plantId.size() <= 32 &&
+        plantId.matches('^[A-Z0-9_\\-]+$');
     }
 
     function isValidUserPublicProfile(data, userId) {
@@ -90,7 +134,22 @@ service cloud.firestore {
 
     function isValidAuthorizedUserRecord(data, userId) {
       return data.keys().hasAll(['id', 'username', 'displayName', 'roleName', 'isActive', 'authorizedBy', 'createdAt', 'updatedAt']) &&
-        data.keys().hasOnly(['id', 'username', 'displayName', 'email', 'roleName', 'isActive', 'authorizedBy', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly([
+          'id',
+          'username',
+          'displayName',
+          'email',
+          'roleName',
+          'isActive',
+          'permissions',
+          'allowedPlants',
+          'defaultPlantId',
+          'signatureDataUrl',
+          'authorizedBy',
+          'ownerUid',
+          'createdAt',
+          'updatedAt'
+        ]) &&
         isValidId(data.id) &&
         data.id == userId &&
         data.username is string &&
@@ -103,9 +162,80 @@ service cloud.firestore {
         (!('email' in data) || (data.email is string && data.email.size() <= 254)) &&
         isValidRoleName(data.roleName) &&
         data.isActive is bool &&
+        (!('permissions' in data) || (data.permissions is list && data.permissions.size() <= 50 && (data.permissions.size() == 0 || (data.permissions[0] is string && data.permissions[0].size() <= 64)))) &&
+        (!('allowedPlants' in data) || (data.allowedPlants is list && data.allowedPlants.size() >= 1 && data.allowedPlants.size() <= 20 && isValidPlantCode(data.allowedPlants[0]))) &&
+        (!('defaultPlantId' in data) || isValidPlantCode(data.defaultPlantId)) &&
+        (!('signatureDataUrl' in data) || (data.signatureDataUrl is string && data.signatureDataUrl.size() <= 300000)) &&
         data.authorizedBy is string &&
         data.authorizedBy.size() >= 1 &&
         data.authorizedBy.size() <= 120 &&
+        (!('ownerUid' in data) || isValidId(data.ownerUid)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidAuthorizedEmailRecord(data, emailKey) {
+      return data.keys().hasAll([
+          'emailKey',
+          'userId',
+          'username',
+          'displayName',
+          'email',
+          'roleName',
+          'isActive',
+          'permissions',
+          'allowedPlants',
+          'defaultPlantId',
+          'authorizedBy',
+          'ownerUid',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'emailKey',
+          'userId',
+          'username',
+          'displayName',
+          'email',
+          'roleName',
+          'isActive',
+          'permissions',
+          'allowedPlants',
+          'defaultPlantId',
+          'signatureDataUrl',
+          'authorizedBy',
+          'ownerUid',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        isValidId(data.emailKey) &&
+        data.emailKey == emailKey &&
+        isValidId(data.userId) &&
+        data.username is string &&
+        data.username.size() >= 3 &&
+        data.username.size() <= 32 &&
+        data.username.matches('^[a-zA-Z0-9._-]+$') &&
+        data.displayName is string &&
+        data.displayName.size() >= 1 &&
+        data.displayName.size() <= 120 &&
+        data.email is string &&
+        data.email.size() >= 3 &&
+        data.email.size() <= 254 &&
+        isValidRoleName(data.roleName) &&
+        data.isActive is bool &&
+        data.permissions is list &&
+        data.permissions.size() <= 50 &&
+        (data.permissions.size() == 0 || (data.permissions[0] is string && data.permissions[0].size() <= 64)) &&
+        data.allowedPlants is list &&
+        data.allowedPlants.size() >= 1 &&
+        data.allowedPlants.size() <= 20 &&
+        isValidPlantCode(data.allowedPlants[0]) &&
+        isValidPlantCode(data.defaultPlantId) &&
+        (!('signatureDataUrl' in data) || (data.signatureDataUrl is string && data.signatureDataUrl.size() <= 300000)) &&
+        data.authorizedBy is string &&
+        data.authorizedBy.size() >= 1 &&
+        data.authorizedBy.size() <= 120 &&
+        isValidId(data.ownerUid) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
@@ -119,6 +249,35 @@ service cloud.firestore {
         data.role.size() <= 20 &&
         data.role == 'admin' &&
         data.createdAt is timestamp;
+    }
+
+    function isValidAuditLogEntry(data, logId) {
+      return data.keys().hasAll(['id', 'ownerUid', 'actorUsername', 'actorRole', 'action', 'targetType', 'details', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'ownerUid', 'actorUsername', 'actorRole', 'action', 'targetType', 'targetId', 'details', 'createdAt']) &&
+        isValidId(data.id) &&
+        data.id == logId &&
+        isValidId(data.ownerUid) &&
+        data.actorUsername is string && data.actorUsername.size() >= 1 && data.actorUsername.size() <= 64 &&
+        data.actorRole is string && data.actorRole.size() >= 1 && data.actorRole.size() <= 40 &&
+        data.action is string && data.action.size() >= 1 && data.action.size() <= 64 &&
+        data.targetType is string && data.targetType.size() >= 1 && data.targetType.size() <= 32 &&
+        (!('targetId' in data) || (data.targetId is string && data.targetId.size() <= 128)) &&
+        data.details is string && data.details.size() <= 500 &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidPlantSettings(data, settingId) {
+      return data.keys().hasAll(['id', 'ownerUid', 'companyName', 'settingsJson', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'ownerUid', 'companyName', 'companySubtitle', 'settingsJson', 'updatedBy', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        data.id == settingId &&
+        isValidId(data.ownerUid) &&
+        data.companyName is string && data.companyName.size() >= 1 && data.companyName.size() <= 160 &&
+        (!('companySubtitle' in data) || (data.companySubtitle is string && data.companySubtitle.size() <= 160)) &&
+        data.settingsJson is string && data.settingsJson.size() >= 2 && data.settingsJson.size() <= 350000 &&
+        (!('updatedBy' in data) || (data.updatedBy is string && data.updatedBy.size() <= 120)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
     }
 
     function isValidLoadingSlip(slip) {
@@ -183,6 +342,7 @@ service cloud.firestore {
         ]) &&
         data.keys().hasOnly([
           'id',
+          'plantId',
           'ticketNumber',
           'sequenceNumber',
           'date',
@@ -212,6 +372,7 @@ service cloud.firestore {
         ]) &&
         isValidId(data.id) &&
         data.id == ticketId &&
+        (!('plantId' in data) || isValidPlantCode(data.plantId)) &&
         data.ticketNumber is string && data.ticketNumber.size() >= 1 && data.ticketNumber.size() <= 64 &&
         data.sequenceNumber is number && data.sequenceNumber >= 0 &&
         data.date is string && data.date.size() == 10 && data.date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$') &&
@@ -269,16 +430,26 @@ service cloud.firestore {
         data.updatedAt is timestamp;
     }
 
-    // Non-PII user profiles: ONLY Admins can create or delete user profiles
+    // Non-PII user profiles: ONLY Admins can create or delete; owners must already be active & allowlisted
     match /users/{userId} {
-      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow get: if isValidId(userId) && (isAdmin() || (isOwner(userId) && isActiveAllowlisted()));
       allow list: if false;
 
-      allow create: if isAdmin() &&
+      allow create: if isEmailVerified() &&
         isValidId(userId) &&
         isValidUserPublicProfile(incoming(), userId) &&
         incoming().createdAt == request.time &&
-        incoming().updatedAt == request.time;
+        incoming().updatedAt == request.time &&
+        (
+          isAdmin() ||
+          (
+            isOwner(userId) &&
+            isActiveAllowlisted() &&
+            incoming().uid == request.auth.uid &&
+            incoming().isActive == true &&
+            incoming().roleName == get(/databases/$(database)/documents/authorized_emails/$(callerEmailKey())).data.roleName
+          )
+        );
 
       allow update: if isEmailVerified() &&
         isValidId(userId) &&
@@ -293,6 +464,7 @@ service cloud.firestore {
           ) ||
           (
             isOwner(userId) &&
+            isActiveAllowlisted() &&
             existing().isActive == true &&
             incoming().roleName == existing().roleName &&
             incoming().isActive == existing().isActive &&
@@ -304,14 +476,14 @@ service cloud.firestore {
 
       // Master Gate + PII isolation subcollection
       match /private/{docId} {
-        allow get: if isValidId(userId) && isValidId(docId) && docId == 'info' && (isOwner(userId) || isAdmin());
+        allow get: if isValidId(userId) && isValidId(docId) && docId == 'info' && (isAdmin() || (isOwner(userId) && isActiveAllowlisted()));
         allow list: if false;
 
         allow create: if isEmailVerified() &&
           isValidId(userId) &&
           isValidId(docId) &&
           docId == 'info' &&
-          isAdmin() &&
+          (isAdmin() || (isOwner(userId) && isActiveAllowlisted())) &&
           isValidUserPrivateInfo(incoming(), userId) &&
           incoming().createdAt == request.time &&
           incoming().updatedAt == request.time &&
@@ -321,7 +493,7 @@ service cloud.firestore {
           isValidId(userId) &&
           isValidId(docId) &&
           docId == 'info' &&
-          (isAdmin() || (isOwner(userId) && exists(/databases/$(database)/documents/users/$(userId)))) &&
+          (isAdmin() || (isOwner(userId) && isActiveAllowlisted() && exists(/databases/$(database)/documents/users/$(userId)))) &&
           isValidUserPrivateInfo(incoming(), userId) &&
           incoming().uid == existing().uid &&
           incoming().createdAt == existing().createdAt &&
@@ -333,10 +505,10 @@ service cloud.firestore {
       }
     }
 
-    // Admin-managed user authorization whitelist (only Admin can create, edit, or delete)
+    // Admin-managed user authorization records (Create/Edit/Delete strictly restricted to Administrators)
     match /authorized_users/{userId} {
-      allow get: if isValidId(userId) && (isAdmin() || (isEmailVerified() && existing().email == request.auth.token.email));
-      allow list: if false;
+      allow get: if isValidId(userId) && (isAdmin() || (isActiveAllowlisted() && existing().email == cleanEmailLower()));
+      allow list: if isEmailVerified() && (isBootstrappedAdmin() || resource.data.ownerUid == request.auth.uid);
 
       allow create: if isAdmin() &&
         isValidId(userId) &&
@@ -356,11 +528,56 @@ service cloud.firestore {
           'email',
           'roleName',
           'isActive',
+          'permissions',
+          'allowedPlants',
+          'defaultPlantId',
+          'signatureDataUrl',
           'authorizedBy',
+          'ownerUid',
           'updatedAt'
         ]);
 
       allow delete: if isValidId(userId) && isAdmin();
+    }
+
+    // Email-keyed allowlist enforced during Firebase login verification & plant/role lookups
+    match /authorized_emails/{emailKey} {
+      allow get: if isValidId(emailKey) && isEmailVerified() && (
+        isAdmin() ||
+        emailKey == callerEmailKey() ||
+        (resource != null && existing().email == cleanEmailLower())
+      );
+      allow list: if isEmailVerified() && (isBootstrappedAdmin() || resource.data.ownerUid == request.auth.uid);
+
+      allow create: if isAdmin() &&
+        isValidId(emailKey) &&
+        isValidAuthorizedEmailRecord(incoming(), emailKey) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isAdmin() &&
+        isValidId(emailKey) &&
+        isValidAuthorizedEmailRecord(incoming(), emailKey) &&
+        incoming().emailKey == existing().emailKey &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'userId',
+          'username',
+          'displayName',
+          'email',
+          'roleName',
+          'isActive',
+          'permissions',
+          'allowedPlants',
+          'defaultPlantId',
+          'signatureDataUrl',
+          'authorizedBy',
+          'ownerUid',
+          'updatedAt'
+        ]);
+
+      allow delete: if isValidId(emailKey) && isAdmin();
     }
 
     // Trusted Admin Registry
@@ -376,25 +593,75 @@ service cloud.firestore {
       allow delete: if isValidId(userId) && isAdmin();
     }
 
-    // Gate Queue Tickets & Loading Slips (non-PII operational state; driver PII isolated under /private/driver)
+    // Append-only Administrator Audit Logs
+    match /audit_logs/{logId} {
+      allow get: if isValidId(logId) && isAdmin();
+      allow list: if isEmailVerified() && (isBootstrappedAdmin() || resource.data.ownerUid == request.auth.uid);
+      allow create: if isAdmin() &&
+        isValidId(logId) &&
+        isValidAuditLogEntry(incoming(), logId) &&
+        incoming().ownerUid == request.auth.uid &&
+        incoming().createdAt == request.time;
+      allow update, delete: if false;
+    }
+
+    // Shared Multi-Plant Settings (readable by active allowlisted users; writable only by Administrators)
+    match /plant_settings/{settingId} {
+      allow get: if isValidId(settingId) && isActiveAllowlisted();
+      allow list: if isEmailVerified() && (isBootstrappedAdmin() || resource.data.ownerUid == request.auth.uid);
+
+      allow create: if isAdmin() &&
+        isValidId(settingId) &&
+        isValidPlantSettings(incoming(), settingId) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isAdmin() &&
+        isValidId(settingId) &&
+        isValidPlantSettings(incoming(), settingId) &&
+        incoming().id == existing().id &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'ownerUid',
+          'companyName',
+          'companySubtitle',
+          'settingsJson',
+          'updatedBy',
+          'updatedAt'
+        ]);
+
+      allow delete: if isValidId(settingId) && isAdmin();
+    }
+
+    // Plant-Scoped Gate Queue Tickets & Loading Slips (restricted to active allowlisted users & permitted plants)
     match /gate_tickets/{ticketId} {
       allow get: if isValidId(ticketId) &&
-        isEmailVerified() &&
-        (resource == null || isAdmin() || existing().ownerUid == request.auth.uid || existing().isSharedPlant == true);
+        isActiveAllowlisted() &&
+        (
+          resource == null ||
+          isAdmin() ||
+          (
+            (existing().ownerUid == request.auth.uid || existing().isSharedPlant == true) &&
+            canAccessPlant(('plantId' in existing()) ? existing().plantId : 'RIYADH')
+          )
+        );
 
       allow list: if isEmailVerified() &&
         (resource.data.ownerUid == request.auth.uid || resource.data.isSharedPlant == true);
 
-      allow create: if isEmailVerified() &&
+      allow create: if isActiveAllowlisted() &&
         isValidId(ticketId) &&
         isValidGateTicket(incoming(), ticketId) &&
+        canAccessPlant(('plantId' in incoming()) ? incoming().plantId : 'RIYADH') &&
         incoming().ownerUid == request.auth.uid &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time;
 
-      allow update: if isEmailVerified() &&
+      allow update: if isActiveAllowlisted() &&
         isValidId(ticketId) &&
         isValidGateTicket(incoming(), ticketId) &&
+        canAccessPlant(('plantId' in existing()) ? existing().plantId : 'RIYADH') &&
         incoming().id == existing().id &&
         incoming().ownerUid == existing().ownerUid &&
         incoming().createdAt == existing().createdAt &&
@@ -403,9 +670,11 @@ service cloud.firestore {
           isAdmin() ||
           (
             (existing().ownerUid == request.auth.uid || existing().isSharedPlant == true) &&
+            (!('plantId' in existing()) || incoming().plantId == existing().plantId) &&
             existing().status != 'completed' &&
             existing().status != 'cancelled' &&
             incoming().diff(existing()).affectedKeys().hasOnly([
+              'plantId',
               'timeCalled',
               'timeLoadingStarted',
               'timeCompleted',
@@ -430,20 +699,23 @@ service cloud.firestore {
         );
 
       allow delete: if isValidId(ticketId) &&
-        isEmailVerified() &&
-        (isAdmin() || existing().ownerUid == request.auth.uid);
+        isActiveAllowlisted() &&
+        (
+          isAdmin() ||
+          (existing().ownerUid == request.auth.uid && canAccessPlant(('plantId' in existing()) ? existing().plantId : 'RIYADH'))
+        );
 
       // Isolated Driver Phone & Iqama PII
       match /private/{docId} {
         allow get: if isValidId(ticketId) &&
           isValidId(docId) &&
           docId == 'driver' &&
-          isEmailVerified() &&
+          isActiveAllowlisted() &&
           (isAdmin() || existing().ownerUid == request.auth.uid);
 
         allow list: if false;
 
-        allow create: if isEmailVerified() &&
+        allow create: if isActiveAllowlisted() &&
           isValidId(ticketId) &&
           isValidId(docId) &&
           docId == 'driver' &&
@@ -453,7 +725,7 @@ service cloud.firestore {
           incoming().updatedAt == request.time &&
           existsAfter(/databases/$(database)/documents/gate_tickets/$(ticketId));
 
-        allow update: if isEmailVerified() &&
+        allow update: if isActiveAllowlisted() &&
           isValidId(ticketId) &&
           isValidId(docId) &&
           docId == 'driver' &&
@@ -469,28 +741,28 @@ service cloud.firestore {
         allow delete: if isValidId(ticketId) &&
           isValidId(docId) &&
           docId == 'driver' &&
-          isEmailVerified() &&
+          isActiveAllowlisted() &&
           (isAdmin() || existing().ownerUid == request.auth.uid);
       }
     }
 
-    // Material Master Records
+    // Material Master Records (strictly restricted to active Admin-allowlisted users)
     match /materials/{materialId} {
       allow get: if isValidId(materialId) &&
-        isEmailVerified() &&
+        isActiveAllowlisted() &&
         (resource == null || isAdmin() || existing().ownerUid == request.auth.uid || existing().isSharedPlant == true);
 
       allow list: if isEmailVerified() &&
         (resource.data.ownerUid == request.auth.uid || resource.data.isSharedPlant == true);
 
-      allow create: if isEmailVerified() &&
+      allow create: if isActiveAllowlisted() &&
         isValidId(materialId) &&
         isValidMaterialRecord(incoming(), materialId) &&
         incoming().ownerUid == request.auth.uid &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time;
 
-      allow update: if isEmailVerified() &&
+      allow update: if isActiveAllowlisted() &&
         isValidId(materialId) &&
         isValidMaterialRecord(incoming(), materialId) &&
         incoming().id == existing().id &&
@@ -514,7 +786,7 @@ service cloud.firestore {
         );
 
       allow delete: if isValidId(materialId) &&
-        isEmailVerified() &&
+        isActiveAllowlisted() &&
         (isAdmin() || existing().ownerUid == request.auth.uid);
     }
 

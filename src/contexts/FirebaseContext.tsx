@@ -10,7 +10,10 @@ import { onAuthStateChanged, type User } from 'firebase/auth';
 import {
   auth,
   getUserProfile,
+  signOutFromFirebase,
   testConnection,
+  verifyFirebaseUserAuthorized,
+  type AuthorizedEmailFirestoreRecord,
   type FirestoreUserProfile,
 } from '../firebase';
 import {
@@ -29,6 +32,9 @@ interface FirebaseContextValue {
   firebaseUser: User | null;
   firebaseAuthReady: boolean;
   firestoreProfile: FirestoreUserProfile | null;
+  authorizedRecord: AuthorizedEmailFirestoreRecord | null;
+  firebaseAuthError: string | null;
+  clearFirebaseAuthError: () => void;
   isFirestoreActive: boolean;
   firestoreTickets: TicketRecord[];
   firestoreMaterials: MaterialMasterRecord[];
@@ -51,6 +57,9 @@ const FirebaseContext = createContext<FirebaseContextValue>({
   firebaseUser: null,
   firebaseAuthReady: false,
   firestoreProfile: null,
+  authorizedRecord: null,
+  firebaseAuthError: null,
+  clearFirebaseAuthError: () => {},
   isFirestoreActive: false,
   firestoreTickets: [],
   firestoreMaterials: [],
@@ -68,6 +77,8 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [firebaseUser, setFirebaseUser] = useState<User | null>(auth.currentUser);
   const [firebaseAuthReady, setFirebaseAuthReady] = useState<boolean>(false);
   const [firestoreProfile, setFirestoreProfile] = useState<FirestoreUserProfile | null>(null);
+  const [authorizedRecord, setAuthorizedRecord] = useState<AuthorizedEmailFirestoreRecord | null>(null);
+  const [firebaseAuthError, setFirebaseAuthError] = useState<string | null>(null);
   const [firestoreTickets, setFirestoreTickets] = useState<TicketRecord[]>([]);
   const [firestoreMaterials, setFirestoreMaterials] = useState<MaterialMasterRecord[]>([]);
   const [ticketsReady, setTicketsReady] = useState<boolean>(false);
@@ -82,9 +93,18 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const lastPushedTicketUpdatedAtRef = useRef<Map<string, number>>(new Map());
   const lastPushedMaterialUpdatedAtRef = useRef<Map<string, number>>(new Map());
   const syncSnapshotInFlightRef = useRef<Promise<void> | null>(null);
+  const authCheckSeqRef = useRef<number>(0);
+
+  const clearFirebaseAuthError = useCallback(() => {
+    setFirebaseAuthError(null);
+  }, []);
 
   const isFirestoreActive = Boolean(
-    firebaseAuthReady && firebaseUser && firebaseUser.emailVerified
+    firebaseAuthReady &&
+      firebaseUser &&
+      firebaseUser.emailVerified &&
+      authorizedRecord &&
+      authorizedRecord.isActive
   );
   const firestoreSyncReady = isFirestoreActive && ticketsReady && materialsReady;
 
@@ -93,32 +113,62 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     let initialAuthHandled = false;
     void testConnection();
 
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (!active) return;
+      const checkSeq = ++authCheckSeqRef.current;
       const isInitialEvent = !initialAuthHandled;
       initialAuthHandled = true;
-      setFirebaseUser(user);
-      setFirebaseAuthReady(true);
 
-      if (user) {
-        if (!isInitialEvent) {
-          void testConnection();
-        }
-        void getUserProfile(user.uid)
-          .then((profile) => {
-            if (active) setFirestoreProfile(profile);
-          })
-          .catch(() => {
-            if (active) setFirestoreProfile(null);
-          });
-      } else {
+      if (!user) {
+        setFirebaseUser(null);
         setFirestoreProfile(null);
+        setAuthorizedRecord(null);
         setFirestoreTickets([]);
         setFirestoreMaterials([]);
         setTicketsReady(false);
         setMaterialsReady(false);
         setFirestoreSyncError(null);
+        setFirebaseAuthReady(true);
+        return;
       }
+
+      if (!isInitialEvent) {
+        void testConnection();
+      }
+
+      const authRes = await verifyFirebaseUserAuthorized(user);
+      if (!active || checkSeq !== authCheckSeqRef.current) return;
+
+      if (!authRes.authorized) {
+        setFirebaseAuthError(authRes.message);
+        setFirebaseUser(null);
+        setFirestoreProfile(null);
+        setAuthorizedRecord(null);
+        setFirestoreTickets([]);
+        setFirestoreMaterials([]);
+        setTicketsReady(false);
+        setMaterialsReady(false);
+        setFirebaseAuthReady(true);
+        await signOutFromFirebase().catch(() => {});
+        return;
+      }
+
+      setFirebaseAuthError(null);
+      setAuthorizedRecord(authRes.record);
+      setFirebaseUser(user);
+      setFirebaseAuthReady(true);
+
+      void getUserProfile(user.uid)
+        .then((profile) => {
+          if (active && checkSeq === authCheckSeqRef.current) {
+            setFirestoreProfile(profile);
+          }
+        })
+        .catch(() => {
+          if (active && checkSeq === authCheckSeqRef.current) {
+            setFirestoreProfile(null);
+          }
+        });
     });
 
     return () => {
@@ -127,9 +177,17 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     };
   }, []);
 
-  // Attach real-time Firestore listeners only once authenticated & verified
+  const allowedPlantsKey = authorizedRecord?.allowedPlants?.join(',') || '';
+
+  // Attach real-time Firestore listeners only once authenticated, verified, and admin-allowlisted
   useEffect(() => {
-    if (!firebaseAuthReady || !firebaseUser || !firebaseUser.emailVerified) {
+    if (
+      !firebaseAuthReady ||
+      !firebaseUser ||
+      !firebaseUser.emailVerified ||
+      !authorizedRecord ||
+      !authorizedRecord.isActive
+    ) {
       return;
     }
 
@@ -147,7 +205,8 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         setFirestoreSyncError(err.message);
         setTicketsReady(true);
       },
-      fallbackDriverPiiRef.current
+      fallbackDriverPiiRef.current,
+      authorizedRecord.allowedPlants
     );
 
     const unsubMaterials = subscribeFirestoreMaterials(
@@ -168,7 +227,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       unsubTickets();
       unsubMaterials();
     };
-  }, [firebaseAuthReady, firebaseUser]);
+  }, [firebaseAuthReady, firebaseUser, authorizedRecord, allowedPlantsKey]);
 
   const saveTicketToFirestore = useCallback(async (ticket: TicketRecord) => {
     if (!auth.currentUser || !auth.currentUser.emailVerified) return;
@@ -292,6 +351,9 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         firebaseUser,
         firebaseAuthReady,
         firestoreProfile,
+        authorizedRecord,
+        firebaseAuthError,
+        clearFirebaseAuthError,
         isFirestoreActive,
         firestoreTickets,
         firestoreMaterials,

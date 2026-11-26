@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { TicketRecord, CompanySettings } from '../types';
 import { formatSaudiPhoneNumber } from '../utils/whatsapp';
-import { formatDisplayDate } from '../services/storage';
+import { formatDisplayDate, resolveSettingsForPlant } from '../services/storage';
 import { generateLoadingSlipPDF } from '../utils/pdfSlip';
 import { buildDriverLiveStatusUrl, generateQrPngDataUrl } from '../utils/driverStatusUrl';
 import { Printer, Download, X, Scissors, CheckCircle2 } from 'lucide-react';
@@ -26,6 +26,7 @@ export const LoadingSlipPrintView: React.FC<LoadingSlipPrintViewProps> = ({
   autoPrint = false,
   onClose,
 }) => {
+  const plantSettings = resolveSettingsForPlant(settings, ticket.plantId);
   const slip = ticket.loadingSlip;
   const isDifferentPreparer = Boolean(
     slip?.storeInchargeUserId && currentUserId && slip.storeInchargeUserId !== currentUserId
@@ -34,8 +35,8 @@ export const LoadingSlipPrintView: React.FC<LoadingSlipPrintViewProps> = ({
     ? (slip?.storeInchargeName || storeInchargeFullName || '').trim()
     : (storeInchargeFullName || slip?.storeInchargeName || '').trim();
   const displaySignatureDataUrl = isDifferentPreparer
-    ? slip?.storeInchargeSignatureDataUrl || settings.storeInchargeSignatureDataUrl || ''
-    : storeInchargeSignatureDataUrl || settings.storeInchargeSignatureDataUrl || '';
+    ? slip?.storeInchargeSignatureDataUrl || plantSettings.storeInchargeSignatureDataUrl || ''
+    : storeInchargeSignatureDataUrl || plantSettings.storeInchargeSignatureDataUrl || '';
   const items = slip?.items || [];
   // Ensure we always have 8 rows
   const paddedItems = Array.from({ length: 8 }, (_, i) => {
@@ -79,7 +80,7 @@ export const LoadingSlipPrintView: React.FC<LoadingSlipPrintViewProps> = ({
   }, [liveStatusUrl]);
 
   const handleSavePDF = () => {
-    generateLoadingSlipPDF(ticket, settings, displayStoreInchargeName, displaySignatureDataUrl);
+    generateLoadingSlipPDF(ticket, plantSettings, displayStoreInchargeName, displaySignatureDataUrl);
     setPdfNotice('2-Copy A4 PDF downloaded! Open the PDF file to view or print.');
     setTimeout(() => setPdfNotice(null), 5000);
   };
@@ -101,12 +102,12 @@ export const LoadingSlipPrintView: React.FC<LoadingSlipPrintViewProps> = ({
     setTimeout(() => {
       window.removeEventListener('beforeprint', onBeforePrint);
       if (!printDialogOpened) {
-        generateLoadingSlipPDF(ticket, settings, displayStoreInchargeName, displaySignatureDataUrl);
+        generateLoadingSlipPDF(ticket, plantSettings, displayStoreInchargeName, displaySignatureDataUrl);
         setPdfNotice('2-Copy A4 PDF downloaded (preview frame restricts browser print popup). Open the PDF to print!');
         setTimeout(() => setPdfNotice(null), 6000);
       }
     }, 250);
-  }, [ticket, settings, displayStoreInchargeName, displaySignatureDataUrl]);
+  }, [ticket, plantSettings, displayStoreInchargeName, displaySignatureDataUrl]);
 
   useEffect(() => {
     if (!autoPrint || autoPrintedRef.current || !qrResolved) return;
@@ -117,25 +118,34 @@ export const LoadingSlipPrintView: React.FC<LoadingSlipPrintViewProps> = ({
     return () => window.clearTimeout(timer);
   }, [autoPrint, qrResolved, handlePrint]);
 
+  const plantHeaderInfoLine = [
+    plantSettings.address,
+    plantSettings.phone ? `Ph: ${plantSettings.phone}` : '',
+    plantSettings.email ? plantSettings.email : '',
+    plantSettings.gstin ? `Tax/GSTIN: ${plantSettings.gstin}` : '',
+  ]
+    .filter(Boolean)
+    .join(' | ');
+
   const renderSingleCopy = (copyType: 'ORIGINAL (OFFICE USE)' | 'DUPLICATE (FOR FORKLIFT OPERATOR)') => (
     <div className="single-slip-copy border-2 border-black bg-white p-2.5 text-black flex flex-col justify-between text-[11px] leading-tight">
       {/* Header */}
       <div>
         <div className="flex justify-between items-start border-b border-black pb-1 mb-1">
           <div className="flex items-center gap-2 min-w-0">
-            {settings.logoDataUrl && (
+            {plantSettings.logoDataUrl && (
               <img
-                src={settings.logoDataUrl}
-                alt={settings.companyName}
+                src={plantSettings.logoDataUrl}
+                alt={plantSettings.companyName}
                 className="h-9 w-9 object-contain shrink-0 bg-white"
               />
             )}
             <div className="min-w-0">
               <h1 className="text-sm font-black uppercase tracking-wide text-black">
-                {settings.companyName}
+                {plantSettings.companyName}
               </h1>
               <p className="text-[9.5px] text-gray-700 font-medium">
-                {[settings.address, settings.phone ? `Ph: ${settings.phone}` : ''].filter(Boolean).join(' | ')}
+                {plantHeaderInfoLine}
               </p>
             </div>
           </div>

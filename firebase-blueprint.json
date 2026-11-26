@@ -95,7 +95,7 @@
     },
     "AuthorizedUserRecord": {
       "title": "AuthorizedUserRecord",
-      "description": "Admin-managed user authorization record; only Administrators (default: newshuntexpress@gmail.com) may create, edit, or delete records.",
+      "description": "Admin-managed user authorization record with permissions and allowedPlants; only Administrators may create, edit, or delete records.",
       "type": "object",
       "properties": {
         "id": {
@@ -121,7 +121,7 @@
         "email": {
           "type": "string",
           "format": "email",
-          "description": "Authorized email address for Firebase Google Login (optional for password-only accounts).",
+          "description": "Authorized email address for Firebase Google Login or username/email login.",
           "maxLength": 254
         },
         "roleName": {
@@ -143,11 +143,36 @@
           "type": "boolean",
           "description": "Whether the user is authorized to access the application."
         },
+        "permissions": {
+          "type": "array",
+          "description": "Allotted portal permission keys (bounded <= 50)."
+        },
+        "allowedPlants": {
+          "type": "array",
+          "description": "Authorized plant IDs (e.g. RIYADH, JEDDAH, or ALL; bounded <= 20)."
+        },
+        "defaultPlantId": {
+          "type": "string",
+          "description": "Default operational plant ID for this user.",
+          "maxLength": 32
+        },
+        "signatureDataUrl": {
+          "type": "string",
+          "description": "Optional digital signature image data URL.",
+          "maxLength": 300000
+        },
         "authorizedBy": {
           "type": "string",
           "description": "Username or email of the Administrator who authorized this user.",
           "minLength": 1,
           "maxLength": 120
+        },
+        "ownerUid": {
+          "type": "string",
+          "description": "Firebase UID of the Administrator who last synced this authorization record.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
         },
         "createdAt": {
           "type": "string",
@@ -161,6 +186,109 @@
         }
       },
       "required": ["id", "username", "displayName", "roleName", "isActive", "authorizedBy", "createdAt", "updatedAt"]
+    },
+    "AuthorizedEmailRecord": {
+      "title": "AuthorizedEmailRecord",
+      "description": "Email-keyed allowlist record enforced by Firebase Auth & Firestore security rules so only Admin-created active emails can access the portal and allotted plants.",
+      "type": "object",
+      "properties": {
+        "emailKey": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "username": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 32,
+          "pattern": "^[a-zA-Z0-9._-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "minLength": 3,
+          "maxLength": 254
+        },
+        "roleName": {
+          "type": "string",
+          "enum": [
+            "admin",
+            "user",
+            "mmd_manager",
+            "view_only",
+            "forklift_operator",
+            "liquid_store_operator",
+            "ex_factory_operator",
+            "security_guard"
+          ],
+          "maxLength": 40
+        },
+        "isActive": {
+          "type": "boolean"
+        },
+        "permissions": {
+          "type": "array"
+        },
+        "allowedPlants": {
+          "type": "array"
+        },
+        "defaultPlantId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "signatureDataUrl": {
+          "type": "string",
+          "maxLength": 300000
+        },
+        "authorizedBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "emailKey",
+        "userId",
+        "username",
+        "displayName",
+        "email",
+        "roleName",
+        "isActive",
+        "permissions",
+        "allowedPlants",
+        "defaultPlantId",
+        "authorizedBy",
+        "ownerUid",
+        "createdAt",
+        "updatedAt"
+      ]
     },
     "AdminRegistryEntry": {
       "title": "AdminRegistryEntry",
@@ -188,9 +316,107 @@
       },
       "required": ["uid", "role", "createdAt"]
     },
+    "AuditLogEntry": {
+      "title": "AuditLogEntry",
+      "description": "Append-only security and user-management audit log entry.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "actorUsername": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "actorRole": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "action": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "targetType": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "targetId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "details": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "ownerUid", "actorUsername", "actorRole", "action", "targetType", "details", "createdAt"]
+    },
+    "PlantSettings": {
+      "title": "PlantSettings",
+      "description": "Company branding, gates, and multi-plant configuration shared across active allowlisted users and editable only by Administrators.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "companyName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "companySubtitle": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "settingsJson": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 350000
+        },
+        "updatedBy": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "ownerUid", "companyName", "settingsJson", "createdAt", "updatedAt"]
+    },
     "GateTicketRecord": {
       "title": "GateTicketRecord",
-      "description": "Operational gate queue ticket and nested loading slip stored in Firestore without raw driver phone or Iqama PII.",
+      "description": "Operational gate queue ticket and nested loading slip scoped by plantId without raw driver phone or Iqama PII.",
       "type": "object",
       "properties": {
         "id": {
@@ -199,6 +425,13 @@
           "minLength": 1,
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "plantId": {
+          "type": "string",
+          "description": "Authorized plant identifier (e.g., RIYADH, JEDDAH).",
+          "minLength": 1,
+          "maxLength": 32,
+          "pattern": "^[A-Z0-9_\\-]+$"
         },
         "ticketNumber": {
           "type": "string",
@@ -442,15 +675,27 @@
     },
     "/authorized_users/{userId}": {
       "schema": { "$ref": "#/entities/AuthorizedUserRecord" },
-      "description": "Admin-managed whitelist of authorized portal users (Create/Edit/Delete strictly restricted to Administrators)."
+      "description": "Admin-managed whitelist of authorized portal users including role, permissions, and allowedPlants."
+    },
+    "/authorized_emails/{emailKey}": {
+      "schema": { "$ref": "#/entities/AuthorizedEmailRecord" },
+      "description": "Email-keyed allowlist enforced by Firebase Auth verification and Firestore rules."
     },
     "/admins/{userId}": {
       "schema": { "$ref": "#/entities/AdminRegistryEntry" },
       "description": "Trusted admin registry collection."
     },
+    "/audit_logs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLogEntry" },
+      "description": "Append-only Administrator security & user-management audit logs."
+    },
+    "/plant_settings/{settingId}": {
+      "schema": { "$ref": "#/entities/PlantSettings" },
+      "description": "Shared multi-plant configuration and portal branding managed by Administrators."
+    },
     "/gate_tickets/{ticketId}": {
       "schema": { "$ref": "#/entities/GateTicketRecord" },
-      "description": "Gate queue tickets and nested loading slips synchronized in real time."
+      "description": "Plant-scoped gate queue tickets and nested loading slips synchronized in real time."
     },
     "/gate_tickets/{ticketId}/private/{docId}": {
       "schema": { "$ref": "#/entities/GateTicketDriverPii" },

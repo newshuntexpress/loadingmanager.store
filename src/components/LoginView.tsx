@@ -25,6 +25,7 @@ import {
 interface LoginViewProps {
   needsSetup: boolean;
   staticFirebaseMode?: boolean;
+  externalAuthError?: string | null;
   branding: PublicBranding | null;
   onAuthenticated: (user: AuthUser) => void;
   onOpenDriverStatus: () => void;
@@ -33,6 +34,7 @@ interface LoginViewProps {
 export const LoginView: React.FC<LoginViewProps> = ({
   needsSetup,
   staticFirebaseMode = false,
+  externalAuthError = null,
   branding,
   onAuthenticated,
   onOpenDriverStatus,
@@ -45,7 +47,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(externalAuthError);
   const [domainHint, setDomainHint] = useState<string | null>(null);
   const [detectedStaticMode, setDetectedStaticMode] = useState<boolean>(staticFirebaseMode);
   const [showLegacyForm, setShowLegacyForm] = useState<boolean>(!staticFirebaseMode);
@@ -58,6 +60,12 @@ export const LoginView: React.FC<LoginViewProps> = ({
   useEffect(() => {
     void prewarmFirebaseAuthOriginCheck();
   }, []);
+
+  useEffect(() => {
+    if (externalAuthError) {
+      setError(externalAuthError);
+    }
+  }, [externalAuthError]);
 
   useEffect(() => {
     if (staticFirebaseMode) {
@@ -73,7 +81,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
 
     const cleanUsername = username.trim();
     if (!cleanUsername) {
-      setError('Please enter your username.');
+      setError('Please enter your Admin-assigned username or email.');
       return;
     }
     if (!password) {
@@ -296,7 +304,9 @@ export const LoginView: React.FC<LoginViewProps> = ({
               )}
 
               <div>
-                <label className="block text-xs font-bold text-[#354A5F] mb-1">Username *</label>
+                <label className="block text-xs font-bold text-[#354A5F] mb-1">
+                  {needsSetup ? 'Admin Username *' : 'Username or Email *'}
+                </label>
                 <div className="relative">
                   <UserIcon className="w-4 h-4 text-[#6A829C] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <input
@@ -304,7 +314,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
                     value={username}
                     onChange={(e) => setUsername(e.target.value)}
                     autoComplete="username"
-                    placeholder="Enter your username"
+                    placeholder={needsSetup ? 'Enter admin username' : 'Enter username or email created by Admin'}
                     required
                     disabled={loading || googleLoading}
                     className="w-full pl-9 pr-3 py-2 text-xs font-semibold rounded-xl border border-[#C2D0DF] focus:outline-none focus:ring-2 focus:ring-[#0A6ED1] bg-[#F8FAFC]"
@@ -446,8 +456,9 @@ export const LoginView: React.FC<LoginViewProps> = ({
 
               {!needsSetup && (
                 <p className="text-[11px] text-center text-[#5B738B] leading-relaxed">
-                  Google Sign-In is restricted to users authorized by the Administrator (
-                  <span className="font-mono font-semibold text-[#354A5F]">{DEFAULT_ADMIN_EMAIL}</span>).
+                  Strict Access Control: Only active usernames &amp; emails created in{' '}
+                  <strong className="text-[#354A5F]">Administrator Security &amp; User Management</strong>{' '}
+                  can sign in (Admin: <span className="font-mono font-semibold text-[#354A5F]">{DEFAULT_ADMIN_EMAIL}</span>).
                 </p>
               )}
             </>

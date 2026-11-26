@@ -3,10 +3,29 @@ import {
   DriverMasterRecord,
   MaterialMasterRecord,
   CompanySettings,
+  PlantSpecificSettings,
   LoadingSlipItem,
 } from '../types';
 import { formatSaudiPhoneNumber } from '../utils/whatsapp';
 import { resolveLoadingType } from '../utils/loadingType';
+
+export const DEFAULT_PLANTS = [
+  { id: 'RIYADH', name: 'Riyadh Plant', code: 'RUH', city: 'Riyadh', isActive: true },
+  { id: 'JEDDAH', name: 'Jeddah Plant', code: 'JED', city: 'Jeddah', isActive: true },
+];
+
+export const DEFAULT_JEDDAH_SETTINGS: PlantSpecificSettings = {
+  companyName: 'ARABIAN WATERPROOFING CO. AWAZEL - JEDDAH',
+  companySubtitle: 'Jeddah Plant • Material Dispatch, Gate Queue & Loading Slip Management System',
+  logoDataUrl: '',
+  storeInchargeSignatureDataUrl: '',
+  address: 'Jeddah Industrial City, KSA',
+  phone: '',
+  email: '',
+  gstin: '',
+  gates: ['Gate 1', 'Gate 2', 'Gate 3'],
+  ticketPrefix: 'AWZ-JED',
+};
 
 export const DEFAULT_SETTINGS: CompanySettings = {
   companyName: 'ARABIAN WATERPROOFING CO. AWAZEL',
@@ -20,7 +39,126 @@ export const DEFAULT_SETTINGS: CompanySettings = {
   gates: ['Gate 1', 'Gate 2', 'Gate 4', 'Gate 5', 'Gate 6'],
   ticketPrefix: 'AWZR',
   autoPrintTokenAfterSave: true,
+  plants: DEFAULT_PLANTS,
+  plantSettingsMap: {
+    JEDDAH: { ...DEFAULT_JEDDAH_SETTINGS },
+  },
 };
+
+export function mergeSettingsWithDefaults(incoming?: Partial<CompanySettings> | null): CompanySettings {
+  const baseMap = DEFAULT_SETTINGS.plantSettingsMap || {};
+  const incomingMap = incoming?.plantSettingsMap || {};
+  const mergedMap: Record<string, PlantSpecificSettings> = {
+    ...baseMap,
+  };
+  for (const [k, v] of Object.entries(incomingMap)) {
+    const key = String(k || '').trim().toUpperCase();
+    if (!key || !v || typeof v !== 'object') continue;
+    mergedMap[key] = {
+      ...(baseMap[key] || {}),
+      ...v,
+    };
+  }
+  return {
+    ...DEFAULT_SETTINGS,
+    ...(incoming || {}),
+    plantSettingsMap: mergedMap,
+  };
+}
+
+export function resolveSettingsForPlant(
+  settings: CompanySettings,
+  plantId?: string
+): CompanySettings {
+  const normPlant = (plantId || 'RIYADH').trim().toUpperCase();
+  if (!normPlant || normPlant === 'ALL' || normPlant === 'RIYADH') {
+    const ruhOverride = settings.plantSettingsMap?.RIYADH;
+    if (!ruhOverride) return settings;
+    return {
+      ...settings,
+      companyName: ruhOverride.companyName?.trim() || settings.companyName,
+      companySubtitle:
+        ruhOverride.companySubtitle !== undefined ? ruhOverride.companySubtitle : settings.companySubtitle,
+      logoDataUrl: ruhOverride.logoDataUrl || settings.logoDataUrl,
+      storeInchargeSignatureDataUrl:
+        ruhOverride.storeInchargeSignatureDataUrl || settings.storeInchargeSignatureDataUrl,
+      address: ruhOverride.address !== undefined ? ruhOverride.address : settings.address,
+      phone: ruhOverride.phone !== undefined ? ruhOverride.phone : settings.phone,
+      email: ruhOverride.email !== undefined ? ruhOverride.email : settings.email,
+      gstin: ruhOverride.gstin !== undefined ? ruhOverride.gstin : settings.gstin,
+      ticketPrefix: ruhOverride.ticketPrefix?.trim().toUpperCase() || settings.ticketPrefix,
+      gates:
+        Array.isArray(ruhOverride.gates) && ruhOverride.gates.length > 0
+          ? ruhOverride.gates
+          : settings.gates,
+    };
+  }
+
+  const storedOverride = settings.plantSettingsMap?.[normPlant];
+  const fallbackOverride = normPlant === 'JEDDAH' ? DEFAULT_JEDDAH_SETTINGS : undefined;
+  const override: PlantSpecificSettings | undefined = storedOverride
+    ? { ...(fallbackOverride || {}), ...storedOverride }
+    : fallbackOverride;
+
+  const matchedPlant = settings.plants?.find((p) => p.id.toUpperCase() === normPlant);
+  const plantCode = (
+    matchedPlant?.code ||
+    (normPlant === 'JEDDAH' ? 'JED' : normPlant.slice(0, 3))
+  )
+    .trim()
+    .toUpperCase();
+
+  const defaultCustomPrefix = (() => {
+    const rawBase = (settings.ticketPrefix || 'AWZR').trim().toUpperCase() || 'AWZ';
+    const root = rawBase === 'AWZR' ? 'AWZ' : rawBase;
+    return root.endsWith(`-${plantCode}`) ? root : `${root}-${plantCode}`;
+  })();
+
+  return {
+    ...settings,
+    companyName:
+      override?.companyName?.trim() ||
+      (matchedPlant ? `${settings.companyName} - ${matchedPlant.name.toUpperCase()}` : settings.companyName),
+    companySubtitle:
+      override?.companySubtitle !== undefined
+        ? override.companySubtitle
+        : matchedPlant
+        ? `${matchedPlant.name} • ${settings.companySubtitle}`
+        : settings.companySubtitle,
+    logoDataUrl: override?.logoDataUrl || settings.logoDataUrl,
+    storeInchargeSignatureDataUrl:
+      override?.storeInchargeSignatureDataUrl || settings.storeInchargeSignatureDataUrl,
+    address:
+      override?.address !== undefined
+        ? override.address
+        : matchedPlant?.city
+        ? `${matchedPlant.city}, KSA`
+        : settings.address,
+    phone: override?.phone !== undefined ? override.phone : settings.phone,
+    email: override?.email !== undefined ? override.email : settings.email,
+    gstin: override?.gstin !== undefined ? override.gstin : settings.gstin,
+    ticketPrefix: override?.ticketPrefix?.trim().toUpperCase() || defaultCustomPrefix,
+    gates:
+      Array.isArray(override?.gates) && override.gates.length > 0
+        ? override.gates
+        : Array.isArray(settings.plantGates?.[normPlant]) && settings.plantGates![normPlant].length > 0
+        ? settings.plantGates![normPlant]
+        : settings.gates,
+  };
+}
+
+export function formatTicketNumberWithPlant(
+  settings: CompanySettings,
+  date: string,
+  nextSeq: number,
+  plantId?: string
+): string {
+  const effective = resolveSettingsForPlant(settings, plantId);
+  const dateFormatted = date.replace(/-/g, '');
+  const seqStr = String(nextSeq).padStart(3, '0');
+  const prefix = (effective.ticketPrefix || 'AWZR').trim().toUpperCase() || 'TK';
+  return `${prefix}-${dateFormatted}-${seqStr}`;
+}
 
 export function getTodayDateString(): string {
   const now = new Date();
@@ -100,10 +238,10 @@ export const StorageService = {
       }));
     }
     if (payload.defaultSettings) {
-      cacheDefaultSettings = { ...DEFAULT_SETTINGS, ...payload.defaultSettings };
+      cacheDefaultSettings = mergeSettingsWithDefaults(payload.defaultSettings);
     }
     if (payload.settings) {
-      cacheSettings = { ...DEFAULT_SETTINGS, ...payload.settings };
+      cacheSettings = mergeSettingsWithDefaults(payload.settings);
     }
   },
 
@@ -120,8 +258,9 @@ export const StorageService = {
   },
 
   saveAsDefaultSettings(settings: CompanySettings): void {
-    cacheDefaultSettings = { ...DEFAULT_SETTINGS, ...settings };
-    cacheSettings = { ...DEFAULT_SETTINGS, ...settings };
+    const merged = mergeSettingsWithDefaults(settings);
+    cacheDefaultSettings = merged;
+    cacheSettings = merged;
   },
 
   getSettings(): CompanySettings {
@@ -129,7 +268,7 @@ export const StorageService = {
   },
 
   saveSettings(settings: CompanySettings): void {
-    cacheSettings = { ...DEFAULT_SETTINGS, ...settings };
+    cacheSettings = mergeSettingsWithDefaults(settings);
   },
 
   getTickets(): TicketRecord[] {
@@ -224,21 +363,23 @@ export const StorageService = {
     this.saveDrivers(drivers);
   },
 
-  // Calculate Next Daily Sequence for a specific date
-  getNextDailySequence(date: string): number {
+  // Calculate Next Daily Sequence for a specific date & optional plant
+  getNextDailySequence(date: string, plantId?: string): number {
     const tickets = this.getTickets();
-    const dayTickets = tickets.filter((t) => t.date === date);
+    const normPlant = plantId && plantId !== 'ALL' ? plantId.trim().toUpperCase() : null;
+    const dayTickets = tickets.filter((t) => {
+      if (t.date !== date) return false;
+      if (!normPlant) return true;
+      return (t.plantId || 'RIYADH').toUpperCase() === normPlant;
+    });
     if (dayTickets.length === 0) return 1;
     const maxSeq = Math.max(...dayTickets.map((t) => t.sequenceNumber || 0));
     return maxSeq + 1;
   },
 
   // Generate Automatic Ticket Number
-  generateTicketNumber(date: string, nextSeq: number): string {
-    const settings = this.getSettings();
-    const dateFormatted = date.replace(/-/g, '');
-    const seqStr = String(nextSeq).padStart(3, '0');
-    return `${settings.ticketPrefix}-${dateFormatted}-${seqStr}`;
+  generateTicketNumber(date: string, nextSeq: number, plantId?: string): string {
+    return formatTicketNumberWithPlant(this.getSettings(), date, nextSeq, plantId);
   },
 
   // Calculate current gate queue position for a ticket

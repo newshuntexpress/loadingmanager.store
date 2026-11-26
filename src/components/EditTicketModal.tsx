@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { TicketRecord, TruckLoadingType, CompanySettings } from '../types';
-import { StorageService } from '../services/storage';
+import { StorageService, resolveSettingsForPlant } from '../services/storage';
 import { ApiClient } from '../services/api';
 import { formatSaudiPhoneNumber } from '../utils/whatsapp';
 import { resolveLoadingType, inferLoadingTypeFromDestination } from '../utils/loadingType';
@@ -34,6 +34,7 @@ export const EditTicketModal: React.FC<EditTicketModalProps> = ({
   onSave,
   onClose,
 }) => {
+  const plantSettings = resolveSettingsForPlant(settings, ticket.plantId);
   const [delNoteNumber, setDelNoteNumber] = useState(ticket.delNoteNumber || ticket.loadingSlip?.delNoteNumber || '');
   const [truckNumber, setTruckNumber] = useState(ticket.truckNumber || '');
   const [driverName, setDriverName] = useState(ticket.driverName || '');
@@ -43,15 +44,15 @@ export const EditTicketModal: React.FC<EditTicketModalProps> = ({
   const [loadingType, setLoadingType] = useState<TruckLoadingType>(() => resolveLoadingType(ticket));
   const [loadingTypeManual, setLoadingTypeManual] = useState(() => Boolean(ticket.loadingType));
   const [transporterName, setTransporterName] = useState(ticket.transporterName || '');
-  const [selectedGate, setSelectedGate] = useState(ticket.gateNumber || settings.gates[0] || 'Gate 1');
+  const [selectedGate, setSelectedGate] = useState(ticket.gateNumber || plantSettings.gates[0] || 'Gate 1');
   const [priority, setPriority] = useState<'normal' | 'urgent'>(ticket.priority || 'normal');
   const [remarks, setRemarks] = useState(ticket.remarks || '');
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  const gateOptions = settings.gates.includes(ticket.gateNumber)
-    ? settings.gates
-    : [ticket.gateNumber, ...settings.gates].filter(Boolean);
+  const gateOptions = plantSettings.gates.includes(ticket.gateNumber)
+    ? plantSettings.gates
+    : [ticket.gateNumber, ...plantSettings.gates].filter(Boolean);
 
   const handlePhoneChange = (val: string) => {
     setDriverPhone(val);

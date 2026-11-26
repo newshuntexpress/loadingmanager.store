@@ -21,6 +21,7 @@ import {
   revokeAllUserSessions,
   cleanExpiredSessions,
   computeEffectivePermissions,
+  parseUserAllowedPlants,
   FORKLIFT_ALLOWED_PERMISSION_KEYS,
   LIQUID_STORE_ALLOWED_PERMISSION_KEYS,
   EX_FACTORY_ALLOWED_PERMISSION_KEYS,
@@ -48,6 +49,8 @@ import {
   requireAdmin,
   requirePermission,
   requireAnyPermission,
+  userCanAccessPlant,
+  resolveAuthorizedPlantForUser,
 } from './server/security.ts';
 import { liquidRouter } from './server/liquid.ts';
 import { exFactoryRouter } from './server/exFactory.ts';
@@ -65,6 +68,8 @@ import {
   normalizeDriverRecord,
   normalizeSettingsRecord,
   normalizeWhatsAppTemplates,
+  normalizePlantId,
+  normalizeAllowedPlants,
 } from './server/normalize.ts';
 import {
   ensureDriverSlipToken,
@@ -269,8 +274,9 @@ function getTicketQueueRank(status: string): number {
  * Keeps gateSequenceNumber strictly sequential & non-duplicated (1, 2, 3...)
  * across all active vehicles ('under_loading', 'called', 'waiting') for a given date & gate.
  */
-function recomputeGateQueueNumbers(dateStr: string, gateNumber: string): void {
+function recomputeGateQueueNumbers(dateStr: string, gateNumber: string, plantId = 'RIYADH'): void {
   const normGate = upperStr(gateNumber);
+  const normPlant = normalizePlantId(plantId, 'RIYADH');
   if (!dateStr || !normGate) return;
 
   const sameDayRows = db
@@ -282,6 +288,7 @@ function recomputeGateQueueNumbers(dateStr: string, gateNumber: string): void {
     try {
       const parsed = normalizeTicketRecord(JSON.parse(r.data_json));
       if (
+        normalizePlantId(parsed.plantId, 'RIYADH') === normPlant &&
         upperStr(parsed.gateNumber) === normGate &&
         (parsed.status === 'under_loading' || parsed.status === 'called' || parsed.status === 'waiting')
       ) {
@@ -311,6 +318,7 @@ function recomputeGateQueueNumbers(dateStr: string, gateNumber: string): void {
 function computeLiveGateQueueForTicket(matchedTicket: Record<string, any>) {
   const gateDate = String(matchedTicket.date || '');
   const normGate = upperStr(matchedTicket.gateNumber);
+  const normPlant = normalizePlantId(matchedTicket.plantId, 'RIYADH');
   const sameDayRows = db
     .prepare(`SELECT data_json FROM tickets WHERE date = ? ORDER BY sequence_number ASC`)
     .all(gateDate) as Array<{ data_json: string }>;
@@ -323,7 +331,9 @@ function computeLiveGateQueueForTicket(matchedTicket: Record<string, any>) {
         return null;
       }
     })
-    .filter((t): t is Record<string, any> => Boolean(t && upperStr(t.gateNumber) === normGate));
+    .filter((t): t is Record<string, any> =>
+      Boolean(t && upperStr(t.gateNumber) === normGate && normalizePlantId(t.plantId, 'RIYADH') === normPlant)
+    );
 
   const underLoadingList = gateTickets
     .filter((t) => t.status === 'under_loading')
@@ -693,8 +703,8 @@ app.post('/api/auth/setup', (req: Request, res: Response) => {
   const now = Date.now();
 
   db.prepare(
-    `INSERT INTO users (id, username, full_name, email, password_hash, role_id, is_active, must_change_password, last_login_at, created_by, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, 'role_admin', 1, 0, ?, 'initial_setup', ?, ?)`
+    `INSERT INTO users (id, username, full_name, email, password_hash, role_id, is_active, must_change_password, allowed_plants_json, default_plant_id, last_login_at, created_by, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, 'role_admin', 1, 0, '["ALL"]', 'RIYADH', ?, 'initial_setup', ?, ?)`
   ).run(userId, cleanUsername, cleanFullName, cleanEmail, passwordHash, now, now, now);
 
   const { rawToken, csrfToken } = createSessionForUser(req, res, userId);
@@ -741,16 +751,18 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
   const rawPassword = typeof req.body?.password === 'string' ? req.body.password : '';
 
   if (!rawUsername || !rawPassword) {
-    res.status(400).json({ error: 'Username and password are required.' });
+    res.status(400).json({ error: 'Username (or Email) and password are required.' });
     return;
   }
 
   const userRow = db
     .prepare(
       `SELECT id, username, password_hash, is_active, failed_login_attempts, locked_until
-       FROM users WHERE username = ? COLLATE NOCASE`
+       FROM users
+       WHERE username = ? COLLATE NOCASE OR (email != '' AND LOWER(email) = LOWER(?))
+       LIMIT 1`
     )
-    .get(rawUsername) as
+    .get(rawUsername, rawUsername) as
     | {
         id: string;
         username: string;
@@ -955,8 +967,8 @@ app.post('/api/auth/firebase-login', async (req: Request, res: Response) => {
     const randomPassHash = bcrypt.hashSync(crypto.randomBytes(32).toString('hex'), 12);
 
     db.prepare(
-      `INSERT INTO users (id, username, full_name, email, password_hash, role_id, is_active, must_change_password, failed_login_attempts, locked_until, last_login_at, created_by, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, 'role_admin', 1, 0, 0, NULL, ?, 'system', ?, ?)`
+      `INSERT INTO users (id, username, full_name, email, password_hash, role_id, is_active, must_change_password, allowed_plants_json, default_plant_id, failed_login_attempts, locked_until, last_login_at, created_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 'role_admin', 1, 0, '["ALL"]', 'RIYADH', 0, NULL, ?, 'system', ?, ?)`
     ).run(userId, candidateUsername, displayName, rawEmail, randomPassHash, now, now, now);
 
     logAudit({
@@ -1125,7 +1137,9 @@ app.get('/api/admin/users', requireAuth, requirePasswordChanged, requireAdmin, (
   const rows = db
     .prepare(
       `SELECT u.id, u.username, u.full_name, u.email, u.role_id, u.is_active,
-              u.must_change_password, u.last_login_at, u.signature_data_url, u.created_by, u.created_at, u.updated_at,
+              u.must_change_password, u.last_login_at, u.signature_data_url,
+              u.allowed_plants_json, u.default_plant_id,
+              u.created_by, u.created_at, u.updated_at,
               r.name as role_name, r.display_name as role_display_name,
               (SELECT COUNT(*) FROM sessions s WHERE s.user_id = u.id AND s.revoked_at IS NULL AND s.expires_at > ?) as active_sessions
        FROM users u
@@ -1142,6 +1156,8 @@ app.get('/api/admin/users', requireAuth, requirePasswordChanged, requireAdmin, (
     must_change_password: number;
     last_login_at: number | null;
     signature_data_url: string | null;
+    allowed_plants_json: string | null;
+    default_plant_id: string | null;
     created_by: string | null;
     created_at: number;
     updated_at: number;
@@ -1150,24 +1166,36 @@ app.get('/api/admin/users', requireAuth, requirePasswordChanged, requireAdmin, (
     active_sessions: number;
   }>;
 
-  const users = rows.map((row) => ({
-    id: row.id,
-    username: row.username,
-    fullName: row.full_name,
-    email: row.email,
-    roleId: row.role_id,
-    roleName: row.role_name,
-    roleDisplayName: row.role_display_name,
-    isActive: row.is_active === 1,
-    mustChangePassword: row.must_change_password === 1,
-    lastLoginAt: row.last_login_at,
-    signatureDataUrl: row.signature_data_url || '',
-    createdBy: row.created_by,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    activeSessionCount: row.active_sessions,
-    permissions: computeEffectivePermissions(row.id, row.role_id, row.role_name),
-  }));
+  const users = rows.map((row) => {
+    const allowedPlants = parseUserAllowedPlants(row.allowed_plants_json, row.role_name);
+    const rawDef = String(row.default_plant_id || '').trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '');
+    const defaultPlantId = allowedPlants.includes('ALL')
+      ? rawDef || 'RIYADH'
+      : rawDef && allowedPlants.includes(rawDef)
+      ? rawDef
+      : allowedPlants[0] || 'RIYADH';
+
+    return {
+      id: row.id,
+      username: row.username,
+      fullName: row.full_name,
+      email: row.email,
+      roleId: row.role_id,
+      roleName: row.role_name,
+      roleDisplayName: row.role_display_name,
+      isActive: row.is_active === 1,
+      mustChangePassword: row.must_change_password === 1,
+      lastLoginAt: row.last_login_at,
+      signatureDataUrl: row.signature_data_url || '',
+      createdBy: row.created_by,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      activeSessionCount: row.active_sessions,
+      permissions: computeEffectivePermissions(row.id, row.role_id, row.role_name),
+      allowedPlants,
+      defaultPlantId,
+    };
+  });
 
   res.json({ users });
 });
@@ -1182,6 +1210,8 @@ app.post('/api/admin/users', requireAuth, requirePasswordChanged, requireCsrf, r
     roleName,
     isActive,
     permissions,
+    allowedPlants,
+    defaultPlantId,
     signatureDataUrl,
   } = req.body || {};
 
@@ -1256,6 +1286,13 @@ app.post('/api/admin/users', requireAuth, requirePasswordChanged, requireCsrf, r
     return;
   }
 
+  const normalizedPlants = normalizeAllowedPlants(allowedPlants, targetRoleName);
+  const rawDefaultPlant = normalizePlantId(defaultPlantId, normalizedPlants.includes('ALL') ? 'RIYADH' : normalizedPlants[0] || 'RIYADH');
+  const resolvedDefaultPlant =
+    normalizedPlants.includes('ALL') || normalizedPlants.includes(rawDefaultPlant)
+      ? rawDefaultPlant
+      : normalizedPlants[0] || 'RIYADH';
+
   const userId = `usr_${crypto.randomUUID()}`;
   const hasExplicitPassword = rawTempPassword.length > 0;
   const passwordHash = await bcrypt.hash(
@@ -1267,8 +1304,8 @@ app.post('/api/admin/users', requireAuth, requirePasswordChanged, requireCsrf, r
 
   const createTx = db.transaction(() => {
     db.prepare(
-      `INSERT INTO users (id, username, full_name, email, password_hash, role_id, is_active, must_change_password, signature_data_url, created_by, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO users (id, username, full_name, email, password_hash, role_id, is_active, must_change_password, signature_data_url, allowed_plants_json, default_plant_id, created_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       userId,
       cleanUsername,
@@ -1279,6 +1316,8 @@ app.post('/api/admin/users', requireAuth, requirePasswordChanged, requireCsrf, r
       activeFlag,
       hasExplicitPassword && requirePasswordChange !== false ? 1 : 0,
       sigCheck.value,
+      JSON.stringify(normalizedPlants),
+      resolvedDefaultPlant,
       req.auth!.user.username,
       now,
       now
@@ -1407,7 +1446,7 @@ app.patch('/api/admin/users/:id', requireAuth, requirePasswordChanged, requireCs
     return;
   }
 
-  const { fullName, email, roleName, isActive, signatureDataUrl } = req.body || {};
+  const { fullName, email, roleName, isActive, signatureDataUrl, allowedPlants, defaultPlantId } = req.body || {};
 
   let nextSignatureDataUrl = target.signatureDataUrl || '';
   const hasSignatureField = Object.prototype.hasOwnProperty.call(req.body || {}, 'signatureDataUrl');
@@ -1449,6 +1488,19 @@ app.patch('/api/admin/users/:id', requireAuth, requirePasswordChanged, requireCs
     typeof fullName === 'string' && fullName.trim().length >= 2 ? fullName.trim() : target.fullName;
   const nextEmail = typeof email === 'string' ? email.trim().toLowerCase() : target.email;
 
+  const hasPlantsField = Object.prototype.hasOwnProperty.call(req.body || {}, 'allowedPlants');
+  const nextAllowedPlants = hasPlantsField
+    ? normalizeAllowedPlants(allowedPlants, nextRoleName)
+    : normalizeAllowedPlants(target.allowedPlants, nextRoleName);
+  const rawNextDefaultPlant =
+    defaultPlantId !== undefined
+      ? normalizePlantId(defaultPlantId, nextAllowedPlants.includes('ALL') ? 'RIYADH' : nextAllowedPlants[0] || 'RIYADH')
+      : target.defaultPlantId || 'RIYADH';
+  const nextDefaultPlantId =
+    nextAllowedPlants.includes('ALL') || nextAllowedPlants.includes(rawNextDefaultPlant)
+      ? rawNextDefaultPlant
+      : nextAllowedPlants[0] || 'RIYADH';
+
   if (target.email.trim().toLowerCase() === DEFAULT_ADMIN_EMAIL) {
     if (isActive === false || nextRoleName !== 'admin' || nextEmail !== DEFAULT_ADMIN_EMAIL) {
       res.status(400).json({ error: `Default Administrator (${DEFAULT_ADMIN_EMAIL}) cannot be deactivated, demoted, or have their email removed.` });
@@ -1487,13 +1539,15 @@ app.patch('/api/admin/users/:id', requireAuth, requirePasswordChanged, requireCs
 
   db.transaction(() => {
     db.prepare(
-      `UPDATE users SET full_name = ?, email = ?, role_id = ?, is_active = ?, signature_data_url = ?, updated_at = ? WHERE id = ?`
+      `UPDATE users SET full_name = ?, email = ?, role_id = ?, is_active = ?, signature_data_url = ?, allowed_plants_json = ?, default_plant_id = ?, updated_at = ? WHERE id = ?`
     ).run(
       nextFullName,
       nextEmail,
       roleRow.id,
       nextActive,
       nextSignatureDataUrl,
+      JSON.stringify(nextAllowedPlants),
+      nextDefaultPlantId,
       Date.now(),
       targetId
     );
@@ -1502,8 +1556,9 @@ app.patch('/api/admin/users/:id', requireAuth, requirePasswordChanged, requireCs
     }
   })();
 
-  // Immediately terminate active sessions if deactivated or role changed
-  if (nextActive === 0 || nextRoleName !== target.roleName) {
+  const plantsChanged = JSON.stringify(nextAllowedPlants) !== JSON.stringify(target.allowedPlants || []);
+  // Immediately terminate active sessions if deactivated, role changed, or plant authorization restricted
+  if (nextActive === 0 || nextRoleName !== target.roleName || (plantsChanged && targetId !== req.auth!.user.id)) {
     revokeAllUserSessions(targetId);
   }
 
@@ -1520,7 +1575,7 @@ app.patch('/api/admin/users/:id', requireAuth, requirePasswordChanged, requireCs
     action: actionType,
     targetType: 'user',
     targetId,
-    details: `Updated user "${target.username}" (role: ${nextRoleName}, active: ${nextActive === 1}${hasSignatureField ? (nextSignatureDataUrl ? ', signature updated' : ', signature removed') : ''})`,
+    details: `Updated user "${target.username}" (role: ${nextRoleName}, active: ${nextActive === 1}, plants: ${nextAllowedPlants.join(',')}${hasSignatureField ? (nextSignatureDataUrl ? ', signature updated' : ', signature removed') : ''})`,
     ipAddress: getClientIp(req),
   });
 
@@ -1996,7 +2051,7 @@ export function processAutoLoadingTransitions(nowMs = Date.now()): number {
   if (candidateRows.length === 0) return 0;
 
   const transitioned: Array<{ ticketNumber: string; createdAt: number; delayMinutes: number }> = [];
-  const affectedGates = new Map<string, { date: string; gateNumber: string }>();
+  const affectedGates = new Map<string, { plantId: string; date: string; gateNumber: string }>();
 
   db.transaction(() => {
     const updateStmt = db.prepare(
@@ -2044,7 +2099,9 @@ export function processAutoLoadingTransitions(nowMs = Date.now()): number {
       );
 
       if (parsed.date && parsed.gateNumber) {
-        affectedGates.set(`${parsed.date}::${upperStr(parsed.gateNumber)}`, {
+        const pId = normalizePlantId(parsed.plantId, 'RIYADH');
+        affectedGates.set(`${pId}::${parsed.date}::${upperStr(parsed.gateNumber)}`, {
+          plantId: pId,
           date: String(parsed.date),
           gateNumber: String(parsed.gateNumber),
         });
@@ -2057,8 +2114,8 @@ export function processAutoLoadingTransitions(nowMs = Date.now()): number {
       });
     }
 
-    for (const g of affectedGates.values()) {
-      recomputeGateQueueNumbers(g.date, g.gateNumber);
+    for (const g of affectedGates.values() as Iterable<{ plantId: string; date: string; gateNumber: string }>) {
+      recomputeGateQueueNumbers(g.date, g.gateNumber, g.plantId);
     }
   })();
 
@@ -2082,18 +2139,25 @@ app.get(
   requireAuth,
   requirePasswordChanged,
   requireAnyPermission(['tickets.view', 'forklift.operate', 'dispatch.view', 'material_register.view', 'guard.view']),
-  (_req: Request, res: Response) => {
+  (req: Request, res: Response) => {
     processAutoLoadingTransitions();
+
+    const reqPlantRaw = typeof req.query.plantId === 'string' ? req.query.plantId.trim().toUpperCase() : '';
+    if (reqPlantRaw && reqPlantRaw !== 'ALL' && !userCanAccessPlant(req.auth!.user, reqPlantRaw)) {
+      res.status(403).json({ error: `Access denied: You are not authorized to access ${reqPlantRaw} plant tickets.` });
+      return;
+    }
 
     const rows = db
       .prepare(
-        `SELECT t.id, t.data_json, t.version, t.created_by, t.updated_by, d.token as driver_status_token
+        `SELECT t.id, t.plant_id, t.data_json, t.version, t.created_by, t.updated_by, d.token as driver_status_token
          FROM tickets t
          LEFT JOIN driver_slip_tokens d ON d.ticket_id = t.id
          ORDER BY t.date DESC, t.sequence_number ASC`
       )
       .all() as Array<{
       id: string;
+      plant_id: string | null;
       data_json: string;
       version: number;
       created_by: string | null;
@@ -2101,20 +2165,29 @@ app.get(
       driver_status_token: string | null;
     }>;
 
-    const tickets = rows.map((r) => {
-      const parsed = JSON.parse(r.data_json);
-      let driverStatusToken = r.driver_status_token || undefined;
-      if (!driverStatusToken && parsed.loadingSlip) {
-        driverStatusToken = ensureDriverSlipToken(r.id, parsed.status);
-      }
-      return normalizeTicketRecord({
-        ...parsed,
-        version: r.version,
-        createdBy: r.created_by || undefined,
-        updatedBy: r.updated_by || undefined,
-        ...(driverStatusToken ? { driverStatusToken } : {}),
+    const tickets = rows
+      .map((r) => {
+        const parsed = JSON.parse(r.data_json);
+        const plantId = normalizePlantId(parsed.plantId || r.plant_id, 'RIYADH');
+        let driverStatusToken = r.driver_status_token || undefined;
+        if (!driverStatusToken && parsed.loadingSlip) {
+          driverStatusToken = ensureDriverSlipToken(r.id, parsed.status);
+        }
+        return normalizeTicketRecord({
+          ...parsed,
+          plantId,
+          version: r.version,
+          createdBy: r.created_by || undefined,
+          updatedBy: r.updated_by || undefined,
+          ...(driverStatusToken ? { driverStatusToken } : {}),
+        });
+      })
+      .filter((t) => {
+        const pId = normalizePlantId(t.plantId, 'RIYADH');
+        if (!userCanAccessPlant(req.auth!.user, pId)) return false;
+        if (reqPlantRaw && reqPlantRaw !== 'ALL' && pId !== reqPlantRaw) return false;
+        return true;
       });
-    });
 
     res.json({ tickets });
   }
@@ -2128,6 +2201,12 @@ app.post(
   requirePermission('tickets.create'),
   (req: Request, res: Response) => {
     const payload = req.body || {};
+    const targetPlantId = resolveAuthorizedPlantForUser(req.auth!.user, payload.plantId);
+    if (!targetPlantId) {
+      res.status(403).json({ error: 'Access denied: You are not authorized to create tickets for this plant.' });
+      return;
+    }
+
     if (!payload.delNoteNumber || !String(payload.delNoteNumber).trim()) {
       res.status(400).json({ error: 'Delivery Note Number (Del Note No.) is required.' });
       return;
@@ -2144,21 +2223,46 @@ app.post(
     const createTx = db.transaction(() => {
       const dateStr = String(payload.date || new Date().toISOString().split('T')[0]);
       const dayRows = db
-        .prepare(`SELECT sequence_number, data_json FROM tickets WHERE date = ?`)
-        .all(dateStr) as Array<{ sequence_number: number; data_json: string }>;
+        .prepare(`SELECT sequence_number, plant_id, data_json FROM tickets WHERE date = ?`)
+        .all(dateStr) as Array<{ sequence_number: number; plant_id: string | null; data_json: string }>;
 
-      const maxSeq = dayRows.reduce((acc, r) => Math.max(acc, r.sequence_number || 0), 0);
+      const plantDayRows = dayRows.filter((r) => {
+        try {
+          const p = JSON.parse(r.data_json);
+          return normalizePlantId(p.plantId || r.plant_id, 'RIYADH') === targetPlantId;
+        } catch {
+          return normalizePlantId(r.plant_id, 'RIYADH') === targetPlantId;
+        }
+      });
+
+      const maxSeq = plantDayRows.reduce((acc, r) => Math.max(acc, r.sequence_number || 0), 0);
       const nextSeq = maxSeq + 1;
 
       const settingsRow = db.prepare(`SELECT value_json FROM app_settings WHERE key = 'active'`).get() as
         | { value_json: string }
         | undefined;
-      const prefix = settingsRow ? upperStr(JSON.parse(settingsRow.value_json).ticketPrefix) || 'TK' : 'TK';
-      const ticketNumber = `${prefix}-${dateStr.replace(/-/g, '')}-${String(nextSeq).padStart(3, '0')}`;
+      const settingsObj = settingsRow ? normalizeSettingsRecord(JSON.parse(settingsRow.value_json)) : {};
+      const prefix = upperStr(settingsObj.ticketPrefix) || 'TK';
+      const plantObj = Array.isArray(settingsObj.plants)
+        ? settingsObj.plants.find((pl: any) => String(pl.id || '').toUpperCase() === targetPlantId)
+        : undefined;
+      const plantCode = upperStr(
+        plantObj?.code || (targetPlantId === 'JEDDAH' ? 'JED' : targetPlantId.slice(0, 3))
+      );
+      const overridePrefix = upperStr(settingsObj.plantSettingsMap?.[targetPlantId]?.ticketPrefix);
+      const effectivePrefix =
+        targetPlantId === 'RIYADH'
+          ? overridePrefix || prefix
+          : overridePrefix ||
+            (() => {
+              const base = prefix === 'AWZR' ? 'AWZ' : prefix;
+              return base.endsWith(`-${plantCode}`) ? base : `${base}-${plantCode}`;
+            })();
+      const ticketNumber = `${effectivePrefix}-${dateStr.replace(/-/g, '')}-${String(nextSeq).padStart(3, '0')}`;
 
       const gateNumber = String(payload.gateNumber || 'Gate 1').trim();
       const normGate = upperStr(gateNumber);
-      const activeAtGate = dayRows.filter((r) => {
+      const activeAtGate = plantDayRows.filter((r) => {
         const parsed = JSON.parse(r.data_json);
         return (
           upperStr(parsed.gateNumber) === normGate &&
@@ -2173,6 +2277,7 @@ app.post(
       const id = `tkt-${now}-${crypto.randomBytes(3).toString('hex')}`;
       const record = normalizeTicketRecord({
         ...payload,
+        plantId: targetPlantId,
         id,
         ticketNumber,
         sequenceNumber: nextSeq,
@@ -2189,10 +2294,11 @@ app.post(
       });
 
       db.prepare(
-        `INSERT INTO tickets (id, ticket_number, sequence_number, date, data_json, version, created_by, updated_by, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`
+        `INSERT INTO tickets (id, plant_id, ticket_number, sequence_number, date, data_json, version, created_by, updated_by, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`
       ).run(
         id,
+        targetPlantId,
         ticketNumber,
         nextSeq,
         dateStr,
@@ -2203,13 +2309,14 @@ app.post(
         now
       );
 
-      recomputeGateQueueNumbers(dateStr, gateNumber);
+      recomputeGateQueueNumbers(dateStr, gateNumber, targetPlantId);
       const savedRow = db.prepare(`SELECT data_json FROM tickets WHERE id = ?`).get(id) as { data_json: string };
       const finalRecord = normalizeTicketRecord(JSON.parse(savedRow.data_json));
 
       upsertDriverMasterInternal(finalRecord);
       return normalizeTicketRecord({
         ...finalRecord,
+        plantId: targetPlantId,
         version: 1,
         createdBy: req.auth!.user.username,
         updatedBy: req.auth!.user.username,
@@ -2224,7 +2331,7 @@ app.post(
       action: 'TICKET_CREATED',
       targetType: 'ticket',
       targetId: created.ticketNumber,
-      details: `Created ticket ${created.ticketNumber} (${created.truckNumber}) at ${created.gateNumber}`,
+      details: `[${created.plantId}] Created ticket ${created.ticketNumber} (${created.truckNumber}) at ${created.gateNumber}`,
       ipAddress: getClientIp(req),
     });
 
@@ -2258,13 +2365,19 @@ app.patch(
         };
       }
 
-      const prev = JSON.parse(existing.data_json);
+      const prev = normalizeTicketRecord(JSON.parse(existing.data_json));
+      const prevPlant = normalizePlantId(prev.plantId, 'RIYADH');
+      if (!userCanAccessPlant(req.auth!.user, prevPlant)) {
+        return { errorStatus: 403 as const, error: `Access denied: Ticket belongs to ${prevPlant} plant.` };
+      }
+
       const {
         version: _ignoreVer,
         createdBy: _ignoreCb,
         updatedBy: _ignoreUb,
         createdAt: _ignoreCa,
         driverStatusToken: _ignoreDst,
+        plantId: _ignorePlantChange,
         ...cleanUpdates
       } = updates;
 
@@ -2325,6 +2438,7 @@ app.patch(
       const merged = normalizeTicketRecord({
         ...prev,
         ...cleanUpdatesWithUserSig,
+        plantId: prevPlant,
         id: prev.id,
         ticketNumber: prev.ticketNumber,
         sequenceNumber: prev.sequenceNumber,
@@ -2348,13 +2462,13 @@ app.patch(
       const nextVersion = existing.version + 1;
 
       db.prepare(
-        `UPDATE tickets SET date = ?, data_json = ?, version = ?, updated_by = ?, updated_at = ? WHERE id = ?`
-      ).run(merged.date, JSON.stringify(merged), nextVersion, req.auth!.user.username, now, ticketId);
+        `UPDATE tickets SET plant_id = ?, date = ?, data_json = ?, version = ?, updated_by = ?, updated_at = ? WHERE id = ?`
+      ).run(prevPlant, merged.date, JSON.stringify(merged), nextVersion, req.auth!.user.username, now, ticketId);
 
       // Recompute non-duplicated active queue positions for current (and prior if gate/date changed)
-      recomputeGateQueueNumbers(merged.date, merged.gateNumber);
+      recomputeGateQueueNumbers(merged.date, merged.gateNumber, prevPlant);
       if (upperStr(prev.gateNumber) !== upperStr(merged.gateNumber) || prev.date !== merged.date) {
-        recomputeGateQueueNumbers(prev.date, prev.gateNumber);
+        recomputeGateQueueNumbers(prev.date, prev.gateNumber, prevPlant);
       }
 
       // Ensure unique secure driver live status token when loading slip is present
@@ -2474,6 +2588,11 @@ app.post(
       }
 
       const prev = normalizeTicketRecord(JSON.parse(existing.data_json));
+      const prevPlant = normalizePlantId(prev.plantId, 'RIYADH');
+      if (!userCanAccessPlant(req.auth!.user, prevPlant)) {
+        return { errorStatus: 403 as const, error: `Access denied: Ticket belongs to ${prevPlant} plant.` };
+      }
+
       // Do not modify locked or completed slips
       if (prev.loadingSlip?.isLocked || prev.status === 'completed' || prev.status === 'cancelled') {
         return {
@@ -2523,7 +2642,7 @@ app.post(
         ticketId
       );
 
-      recomputeGateQueueNumbers(updated.date, updated.gateNumber);
+      recomputeGateQueueNumbers(updated.date, updated.gateNumber, prevPlant);
       const refreshedRow = db.prepare(`SELECT data_json FROM tickets WHERE id = ?`).get(ticketId) as { data_json: string };
       const driverStatusToken = getDriverSlipToken(ticketId);
 
@@ -2595,6 +2714,10 @@ app.patch(
       }
 
       const prev = normalizeTicketRecord(JSON.parse(existing.data_json));
+      const prevPlant = normalizePlantId(prev.plantId, 'RIYADH');
+      if (!userCanAccessPlant(req.auth!.user, prevPlant)) {
+        return { errorStatus: 403 as const, error: `Access denied: Ticket belongs to ${prevPlant} plant.` };
+      }
       if (prev.loadingSlip?.isLocked || prev.status === 'completed') {
         return {
           errorStatus: 409 as const,
@@ -2725,6 +2848,10 @@ app.post(
       }
 
       const prev = normalizeTicketRecord(JSON.parse(existing.data_json));
+      const prevPlant = normalizePlantId(prev.plantId, 'RIYADH');
+      if (!userCanAccessPlant(req.auth!.user, prevPlant)) {
+        return { errorStatus: 403 as const, error: `Access denied: Ticket belongs to ${prevPlant} plant.` };
+      }
       if (prev.loadingSlip?.isLocked || prev.status === 'completed') {
         return {
           errorStatus: 409 as const,
@@ -2764,6 +2891,7 @@ app.post(
 
       const updated = normalizeTicketRecord({
         ...prev,
+        plantId: prevPlant,
         status: 'completed',
         timeLoadingStarted: prev.timeLoadingStarted || completedTime,
         timeCompleted: completedTime,
@@ -2781,7 +2909,7 @@ app.post(
         ticketId
       );
 
-      recomputeGateQueueNumbers(updated.date, updated.gateNumber);
+      recomputeGateQueueNumbers(updated.date, updated.gateNumber, prevPlant);
       markDriverTokenCompleted(ticketId);
 
       const alertId = `alt-${now}-${crypto.randomBytes(3).toString('hex')}`;
@@ -2790,12 +2918,13 @@ app.post(
       const gateNumber = String(prev.gateNumber || '').trim() || '—';
 
       db.prepare(
-        `INSERT INTO loading_alerts (id, ticket_id, ticket_number, del_note_number, truck_number, gate_number, completed_by, completed_time, created_at, dismissed_by_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '[]')`
-      ).run(alertId, ticketId, upperStr(prev.ticketNumber), delNoteNumber, truckNumber, gateNumber, operatorName, completedDateTime, now);
+        `INSERT INTO loading_alerts (id, plant_id, ticket_id, ticket_number, del_note_number, truck_number, gate_number, completed_by, completed_time, created_at, dismissed_by_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]')`
+      ).run(alertId, prevPlant, ticketId, upperStr(prev.ticketNumber), delNoteNumber, truckNumber, gateNumber, operatorName, completedDateTime, now);
 
       const alert = {
         id: alertId,
+        plantId: prevPlant,
         ticketId,
         ticketNumber: upperStr(prev.ticketNumber),
         delNoteNumber,
@@ -2857,17 +2986,24 @@ app.get(
       res.status(403).json({ error: 'Access denied: Forklift Operators are restricted to the Forklift Operator Section.' });
       return;
     }
+    const reqPlantRaw = typeof req.query.plantId === 'string' ? req.query.plantId.trim().toUpperCase() : '';
+    if (reqPlantRaw && reqPlantRaw !== 'ALL' && !userCanAccessPlant(req.auth!.user, reqPlantRaw)) {
+      res.status(403).json({ error: `Access denied: You are not authorized to access ${reqPlantRaw} plant alerts.` });
+      return;
+    }
+
     const cutoff = Date.now() - 48 * 60 * 60 * 1000;
     const rows = db
       .prepare(
-        `SELECT id, ticket_id, ticket_number, del_note_number, truck_number, gate_number, completed_by, completed_time, created_at, dismissed_by_json
+        `SELECT id, plant_id, ticket_id, ticket_number, del_note_number, truck_number, gate_number, completed_by, completed_time, created_at, dismissed_by_json
          FROM loading_alerts
          WHERE created_at >= ?
          ORDER BY created_at DESC
-         LIMIT 25`
+         LIMIT 50`
       )
       .all(cutoff) as Array<{
       id: string;
+      plant_id: string | null;
       ticket_id: string;
       ticket_number: string;
       del_note_number: string;
@@ -2882,6 +3018,9 @@ app.get(
     const userId = req.auth!.user.id;
     const alerts = rows
       .filter((r) => {
+        const pId = normalizePlantId(r.plant_id, 'RIYADH');
+        if (!userCanAccessPlant(req.auth!.user, pId)) return false;
+        if (reqPlantRaw && reqPlantRaw !== 'ALL' && pId !== reqPlantRaw) return false;
         try {
           const dismissed: string[] = JSON.parse(r.dismissed_by_json || '[]');
           return !dismissed.includes(userId);
@@ -2889,8 +3028,10 @@ app.get(
           return true;
         }
       })
+      .slice(0, 25)
       .map((r) => ({
         id: r.id,
+        plantId: normalizePlantId(r.plant_id, 'RIYADH'),
         ticketId: r.ticket_id,
         ticketNumber: upperStr(r.ticket_number),
         delNoteNumber: upperStr(r.del_note_number),
@@ -2949,8 +3090,8 @@ app.delete(
   requirePermission('tickets.delete'),
   (req: Request, res: Response) => {
     const ticketId = req.params.id;
-    const existing = db.prepare(`SELECT ticket_number, data_json FROM tickets WHERE id = ?`).get(ticketId) as
-      | { ticket_number: string; data_json: string }
+    const existing = db.prepare(`SELECT ticket_number, plant_id, data_json FROM tickets WHERE id = ?`).get(ticketId) as
+      | { ticket_number: string; plant_id: string | null; data_json: string }
       | undefined;
 
     if (!existing) {
@@ -2958,10 +3099,16 @@ app.delete(
       return;
     }
 
+    const parsed = normalizeTicketRecord(JSON.parse(existing.data_json));
+    const ticketPlant = normalizePlantId(parsed.plantId || existing.plant_id, 'RIYADH');
+    if (!userCanAccessPlant(req.auth!.user, ticketPlant)) {
+      res.status(403).json({ error: `Access denied: Ticket belongs to ${ticketPlant} plant.` });
+      return;
+    }
+
     db.prepare(`DELETE FROM tickets WHERE id = ?`).run(ticketId);
-    const parsed = JSON.parse(existing.data_json);
     if (parsed.date && parsed.gateNumber) {
-      recomputeGateQueueNumbers(parsed.date, parsed.gateNumber);
+      recomputeGateQueueNumbers(parsed.date, parsed.gateNumber, ticketPlant);
     }
 
     logAudit({
@@ -2970,7 +3117,7 @@ app.delete(
       action: 'TICKET_DELETED',
       targetType: 'ticket',
       targetId: existing.ticket_number,
-      details: `Deleted ticket ${existing.ticket_number} (${parsed.truckNumber || ''})`,
+      details: `[${ticketPlant}] Deleted ticket ${existing.ticket_number} (${parsed.truckNumber || ''})`,
       ipAddress: getClientIp(req),
     });
 
@@ -3025,6 +3172,11 @@ app.post(
       createdBy: row.created_by || undefined,
       updatedBy: row.updated_by || undefined,
     });
+
+    if (!userCanAccessPlant(req.auth!.user, ticket.plantId)) {
+      res.status(403).json({ error: 'Access denied: Ticket belongs to another plant.' });
+      return;
+    }
 
     if (!ticket.loadingSlip) {
       res.status(400).json({ error: 'Generate a Loading Slip first before sending the WhatsApp notification.' });
@@ -3093,17 +3245,25 @@ app.post(
       return;
     }
 
+    const restorePlant = resolveAuthorizedPlantForUser(req.auth!.user, payload.plantId);
+    if (!restorePlant) {
+      res.status(403).json({ error: 'Access denied: You are not authorized to restore tickets for this plant.' });
+      return;
+    }
+
     const now = Date.now();
     const record = normalizeTicketRecord({
       ...payload,
+      plantId: restorePlant,
       updatedAt: now,
     });
 
     db.prepare(
-      `INSERT OR REPLACE INTO tickets (id, ticket_number, sequence_number, date, data_json, version, created_by, updated_by, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`
+      `INSERT OR REPLACE INTO tickets (id, plant_id, ticket_number, sequence_number, date, data_json, version, created_by, updated_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`
     ).run(
       record.id,
+      restorePlant,
       record.ticketNumber,
       Number(record.sequenceNumber) || 1,
       record.date,
@@ -3114,7 +3274,7 @@ app.post(
       now
     );
 
-    recomputeGateQueueNumbers(record.date, record.gateNumber);
+    recomputeGateQueueNumbers(record.date, record.gateNumber, restorePlant);
 
     logAudit({
       actorUserId: req.auth!.user.id,
@@ -3122,7 +3282,7 @@ app.post(
       action: 'TICKET_RESTORED',
       targetType: 'ticket',
       targetId: record.ticketNumber,
-      details: `Restored deleted ticket ${record.ticketNumber} (${record.truckNumber || ''})`,
+      details: `[${restorePlant}] Restored deleted ticket ${record.ticketNumber} (${record.truckNumber || ''})`,
       ipAddress: getClientIp(req),
     });
 
@@ -3539,10 +3699,12 @@ app.get(
   requireAuth,
   requirePasswordChanged,
   requirePermission('reports.view'),
-  (_req: Request, res: Response) => {
+  (req: Request, res: Response) => {
     const tickets = (db.prepare(`SELECT data_json FROM tickets ORDER BY date DESC, sequence_number ASC`).all() as Array<{
       data_json: string;
-    }>).map((r) => normalizeTicketRecord(JSON.parse(r.data_json)));
+    }>)
+      .map((r) => normalizeTicketRecord(JSON.parse(r.data_json)))
+      .filter((t) => userCanAccessPlant(req.auth!.user, t.plantId));
     const drivers = (db.prepare(`SELECT data_json FROM drivers`).all() as Array<{ data_json: string }>).map((r) =>
       normalizeDriverRecord(JSON.parse(r.data_json))
     );
@@ -3575,14 +3737,15 @@ app.post('/api/backup/restore', requireAuth, requirePasswordChanged, requireCsrf
     if (Array.isArray(tickets)) {
       db.prepare(`DELETE FROM tickets`).run();
       const insertTicket = db.prepare(
-        `INSERT INTO tickets (id, ticket_number, sequence_number, date, data_json, version, created_by, updated_by, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`
+        `INSERT INTO tickets (id, plant_id, ticket_number, sequence_number, date, data_json, version, created_by, updated_by, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`
       );
       for (const t of tickets) {
         if (t && t.id && t.ticketNumber && t.date) {
           const normT = normalizeTicketRecord(t);
           insertTicket.run(
             normT.id,
+            normalizePlantId(normT.plantId, 'RIYADH'),
             normT.ticketNumber,
             Number(normT.sequenceNumber) || 1,
             normT.date,

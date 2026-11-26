@@ -1,6 +1,6 @@
 import express, { type Request, type Response, type NextFunction } from 'express';
 import { db, logAudit, resetLiquidStoreToDefault, seedLiquidStoreIfEmpty } from './db.ts';
-import { upperStr } from './normalize.ts';
+import { upperStr, normalizePlantId } from './normalize.ts';
 import {
   getClientIp,
   requireAuth,
@@ -8,10 +8,13 @@ import {
   requirePasswordChanged,
   requirePermission,
   requireAnyPermission,
+  resolveAuthorizedPlantForUser,
+  userCanAccessPlant,
 } from './security.ts';
 
 interface DbTankRow {
   id: number;
+  plant_id?: string | null;
   name: string;
   total_capacity_kg: number;
   depth_meters: number;
@@ -30,6 +33,7 @@ interface DbMaterialRow {
 
 interface DbTxRow {
   id: number;
+  plant_id?: string | null;
   tx_code: string;
   type: 'INWARD' | 'OUTWARD';
   tx_date: string;
@@ -49,6 +53,7 @@ interface DbTxRow {
 
 interface DbAuditRow {
   id: number;
+  plant_id?: string | null;
   action: string;
   entity_type: string;
   summary: string;
@@ -166,27 +171,33 @@ function validateAllLiquidTanks(tanks: DbTankRow[], txList: DbTxRow[]): string |
   return null;
 }
 
-function addLiquidAudit(action: string, entityType: string, summary: string, performedBy: string): void {
+function addLiquidAudit(action: string, entityType: string, summary: string, performedBy: string, plantId = 'RIYADH'): void {
   db.prepare(
-    `INSERT INTO liquid_audit_logs (action, entity_type, summary, performed_by, created_at) VALUES (?, ?, ?, ?, ?)`
-  ).run(action, entityType, summary, performedBy, Date.now());
+    `INSERT INTO liquid_audit_logs (plant_id, action, entity_type, summary, performed_by, created_at) VALUES (?, ?, ?, ?, ?, ?)`
+  ).run(normalizePlantId(plantId, 'RIYADH'), action, entityType, summary, performedBy, Date.now());
 }
 
-export function buildLiquidStoreState() {
-  seedLiquidStoreIfEmpty();
+export function buildLiquidStoreState(rawPlantId = 'RIYADH') {
+  const plantId = normalizePlantId(rawPlantId, 'RIYADH');
+  seedLiquidStoreIfEmpty(plantId);
 
-  const rawTanks = db.prepare(`SELECT * FROM liquid_tanks ORDER BY id ASC`).all() as DbTankRow[];
+  const rawTanks = db
+    .prepare(`SELECT * FROM liquid_tanks WHERE plant_id = ? ORDER BY id ASC`)
+    .all(plantId) as DbTankRow[];
   const rawMaterials = db.prepare(`SELECT * FROM liquid_materials ORDER BY id ASC`).all() as DbMaterialRow[];
-  const rawTxs = db.prepare(`SELECT * FROM liquid_transactions ORDER BY tx_date DESC, id DESC`).all() as DbTxRow[];
+  const rawTxs = db
+    .prepare(`SELECT * FROM liquid_transactions WHERE plant_id = ? ORDER BY tx_date DESC, id DESC`)
+    .all(plantId) as DbTxRow[];
   const rawAudits = db
-    .prepare(`SELECT * FROM liquid_audit_logs ORDER BY id DESC LIMIT 300`)
-    .all() as DbAuditRow[];
-  const settingsRow = db.prepare(`SELECT data_json FROM liquid_settings WHERE id = 1`).get() as
+    .prepare(`SELECT * FROM liquid_audit_logs WHERE plant_id = ? ORDER BY id DESC LIMIT 300`)
+    .all(plantId) as DbAuditRow[];
+  const settingsRow = db.prepare(`SELECT data_json FROM liquid_settings WHERE plant_id = ?`).get(plantId) as
     | { data_json: string }
     | undefined;
 
+  const plantLabel = plantId === 'RIYADH' ? 'Riyadh Plant' : plantId === 'JEDDAH' ? 'Jeddah Plant' : `${plantId} Plant`;
   let settings = {
-    facilityName: 'Liquid Material Camp Store — Sector 4',
+    facilityName: `Liquid Material Camp Store — ${plantLabel}`,
     theme: 'light' as 'light' | 'dark',
   };
   if (settingsRow) {
@@ -202,6 +213,7 @@ export function buildLiquidStoreState() {
   }
 
   return {
+    plantId,
     tanks: rawTanks.map((t) => computeTankBalance(t, rawTxs)),
     materials: rawMaterials.map((m) => ({
       id: m.id,
@@ -250,8 +262,13 @@ liquidRouter.use(
   requireAnyPermission(['liquid.view', 'liquid.store', 'liquid.materials'])
 );
 
-liquidRouter.get('/state', (_req: Request, res: Response) => {
-  res.json(buildLiquidStoreState());
+liquidRouter.get('/state', (req: Request, res: Response) => {
+  const plantId = resolveAuthorizedPlantForUser(req.auth!.user, req.query.plantId);
+  if (!plantId) {
+    res.status(403).json({ error: 'Access denied: You are not authorized to access this plant.' });
+    return;
+  }
+  res.json(buildLiquidStoreState(plantId));
 });
 
 liquidRouter.post('/transactions', requireCsrf, requirePermission('liquid.store'), (req: Request, res: Response) => {
@@ -297,21 +314,34 @@ liquidRouter.post('/transactions', requireCsrf, requirePermission('liquid.store'
     return;
   }
 
+  const plantId = resolveAuthorizedPlantForUser(req.auth!.user, b.plantId || req.query.plantId);
+  if (!plantId) {
+    res.status(403).json({ error: 'Access denied: You are not authorized for this plant.' });
+    return;
+  }
+
   const quantityMt = quantityKg / 1000;
   const actorName = req.auth!.user.fullName;
 
   const result = db.transaction(() => {
-    const tanks = db.prepare(`SELECT * FROM liquid_tanks ORDER BY id ASC`).all() as DbTankRow[];
-    const tank = tanks.find((t) => t.id === tankId);
-    if (!tank) {
+    const tankRow = db.prepare(`SELECT * FROM liquid_tanks WHERE id = ?`).get(tankId) as DbTankRow | undefined;
+    if (!tankRow) {
       return { errorStatus: 404 as const, error: 'Selected tank was not found.' };
     }
+    const tankPlant = normalizePlantId(tankRow.plant_id, 'RIYADH');
+    if (!userCanAccessPlant(req.auth!.user, tankPlant) || tankPlant !== plantId) {
+      return { errorStatus: 403 as const, error: 'Access denied: Selected tank belongs to another plant.' };
+    }
 
-    const existingTxs = db.prepare(`SELECT * FROM liquid_transactions`).all() as DbTxRow[];
+    const tanks = db.prepare(`SELECT * FROM liquid_tanks WHERE plant_id = ? ORDER BY id ASC`).all(tankPlant) as DbTankRow[];
+    const tank = tanks.find((t) => t.id === tankId)!;
+
+    const existingTxs = db.prepare(`SELECT * FROM liquid_transactions WHERE plant_id = ?`).all(tankPlant) as DbTxRow[];
     const previewList: DbTxRow[] = [
       ...existingTxs,
       {
         id: Number.MAX_SAFE_INTEGER,
+        plant_id: tankPlant,
         tx_code: 'PREVIEW',
         type,
         tx_date: txDate,
@@ -341,17 +371,19 @@ liquidRouter.post('/transactions', requireCsrf, requirePermission('liquid.store'
     };
     const nextNum = (maxRow.maxId || 0) + 1;
     const prefix = type === 'INWARD' ? 'INW' : 'OUT';
+    const plantTag = tankPlant === 'RIYADH' ? '' : `${tankPlant.slice(0, 3)}-`;
     const datePart = txDate.slice(0, 10).replaceAll('-', '') || new Date().toISOString().slice(0, 10).replaceAll('-', '');
-    const txCode = `${prefix}-${datePart}-${String(nextNum).padStart(4, '0')}`;
+    const txCode = `${prefix}-${plantTag}${datePart}-${String(nextNum).padStart(4, '0')}`;
 
     const info = db
       .prepare(
         `INSERT INTO liquid_transactions (
-          tx_code, type, tx_date, tank_id, material_name, quantity_kg, quantity_mt,
+          plant_id, tx_code, type, tx_date, tank_id, material_name, quantity_kg, quantity_mt,
           reference_number, document_number, party_name, vehicle_number, driver_name, remarks, created_by, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
+        tankPlant,
         txCode,
         type,
         txDate,
@@ -373,10 +405,11 @@ liquidRouter.post('/transactions', requireCsrf, requirePermission('liquid.store'
       'CREATE',
       'TRANSACTION',
       `${type} ${txCode}: ${fmtKG(quantityKg)} KG (${fmtMT(quantityMt)} MT) ${materialName} (${tank.name})`,
-      actorName
+      actorName,
+      tankPlant
     );
 
-    return { ok: true, id: Number(info.lastInsertRowid), txCode };
+    return { ok: true, id: Number(info.lastInsertRowid), txCode, plantId: tankPlant };
   })();
 
   if ('errorStatus' in result && result.errorStatus) {
@@ -390,11 +423,11 @@ liquidRouter.post('/transactions', requireCsrf, requirePermission('liquid.store'
     action: 'LIQUID_TX_CREATED',
     targetType: 'liquid_transaction',
     targetId: result.txCode,
-    details: `${type} ${result.txCode}: ${fmtKG(quantityKg)} KG ${materialName}`,
+    details: `[${result.plantId}] ${type} ${result.txCode}: ${fmtKG(quantityKg)} KG ${materialName}`,
     ipAddress: getClientIp(req),
   });
 
-  res.status(201).json({ state: buildLiquidStoreState(), txCode: result.txCode });
+  res.status(201).json({ state: buildLiquidStoreState(result.plantId), txCode: result.txCode });
 });
 
 liquidRouter.put('/transactions/:id', requireCsrf, requirePermission('liquid.store'), (req: Request, res: Response) => {
@@ -429,15 +462,19 @@ liquidRouter.put('/transactions/:id', requireCsrf, requirePermission('liquid.sto
     if (!existing) {
       return { errorStatus: 404 as const, error: 'Transaction record not found.' };
     }
+    const txPlant = normalizePlantId(existing.plant_id, 'RIYADH');
+    if (!userCanAccessPlant(req.auth!.user, txPlant)) {
+      return { errorStatus: 403 as const, error: 'Access denied: Transaction belongs to another plant.' };
+    }
 
-    const tanks = db.prepare(`SELECT * FROM liquid_tanks ORDER BY id ASC`).all() as DbTankRow[];
+    const tanks = db.prepare(`SELECT * FROM liquid_tanks WHERE plant_id = ? ORDER BY id ASC`).all(txPlant) as DbTankRow[];
     const tank = tanks.find((t) => t.id === tankId);
     if (!tank) {
-      return { errorStatus: 404 as const, error: 'Selected tank not found.' };
+      return { errorStatus: 404 as const, error: 'Selected tank not found in this plant.' };
     }
 
     const nextType = b.type === 'OUTWARD' ? 'OUTWARD' : b.type === 'INWARD' ? 'INWARD' : existing.type;
-    const allTxs = db.prepare(`SELECT * FROM liquid_transactions`).all() as DbTxRow[];
+    const allTxs = db.prepare(`SELECT * FROM liquid_transactions WHERE plant_id = ?`).all(txPlant) as DbTxRow[];
     const previewList = allTxs.map((row) =>
       row.id === txId
         ? {
@@ -488,10 +525,11 @@ liquidRouter.put('/transactions/:id', requireCsrf, requirePermission('liquid.sto
       'UPDATE',
       'TRANSACTION',
       `Updated ${existing.tx_code}: ${fmtKG(quantityKg)} KG ${materialName} in ${tank.name}`,
-      actorName
+      actorName,
+      txPlant
     );
 
-    return { ok: true, txCode: existing.tx_code };
+    return { ok: true, txCode: existing.tx_code, plantId: txPlant };
   })();
 
   if ('errorStatus' in result && result.errorStatus) {
@@ -509,7 +547,7 @@ liquidRouter.put('/transactions/:id', requireCsrf, requirePermission('liquid.sto
     ipAddress: getClientIp(req),
   });
 
-  res.json({ state: buildLiquidStoreState(), txCode: result.txCode });
+  res.json({ state: buildLiquidStoreState(result.plantId), txCode: result.txCode });
 });
 
 liquidRouter.delete('/transactions/:id', requireCsrf, requirePermission('liquid.store'), (req: Request, res: Response) => {
@@ -526,9 +564,13 @@ liquidRouter.delete('/transactions/:id', requireCsrf, requirePermission('liquid.
     if (!existing) {
       return { errorStatus: 404 as const, error: 'Transaction record not found.' };
     }
+    const txPlant = normalizePlantId(existing.plant_id, 'RIYADH');
+    if (!userCanAccessPlant(req.auth!.user, txPlant)) {
+      return { errorStatus: 403 as const, error: 'Access denied: Transaction belongs to another plant.' };
+    }
 
-    const tanks = db.prepare(`SELECT * FROM liquid_tanks ORDER BY id ASC`).all() as DbTankRow[];
-    const allTxs = db.prepare(`SELECT * FROM liquid_transactions`).all() as DbTxRow[];
+    const tanks = db.prepare(`SELECT * FROM liquid_tanks WHERE plant_id = ? ORDER BY id ASC`).all(txPlant) as DbTankRow[];
+    const allTxs = db.prepare(`SELECT * FROM liquid_transactions WHERE plant_id = ?`).all(txPlant) as DbTxRow[];
     const remaining = allTxs.filter((row) => row.id !== txId);
 
     const validationErr = validateAllLiquidTanks(tanks, remaining);
@@ -541,10 +583,11 @@ liquidRouter.delete('/transactions/:id', requireCsrf, requirePermission('liquid.
       'DELETE',
       'TRANSACTION',
       `Deleted ${existing.type} ${existing.tx_code} (${fmtKG(existing.quantity_kg)} KG ${existing.material_name})`,
-      actorName
+      actorName,
+      txPlant
     );
 
-    return { ok: true, txCode: existing.tx_code };
+    return { ok: true, txCode: existing.tx_code, plantId: txPlant };
   })();
 
   if ('errorStatus' in result && result.errorStatus) {
@@ -562,11 +605,16 @@ liquidRouter.delete('/transactions/:id', requireCsrf, requirePermission('liquid.
     ipAddress: getClientIp(req),
   });
 
-  res.json({ state: buildLiquidStoreState(), txCode: result.txCode });
+  res.json({ state: buildLiquidStoreState(result.plantId), txCode: result.txCode });
 });
 
 liquidRouter.post('/tanks', requireCsrf, requirePermission('liquid.store'), (req: Request, res: Response) => {
   const b = req.body || {};
+  const plantId = resolveAuthorizedPlantForUser(req.auth!.user, b.plantId || req.query.plantId);
+  if (!plantId) {
+    res.status(403).json({ error: 'Access denied: You are not authorized to add tanks for this plant.' });
+    return;
+  }
   const name = upperStr(b.name);
   const totalCapacityKg = Number(b.totalCapacityKg);
   const depthMeters = Number(b.depthMeters);
@@ -586,28 +634,29 @@ liquidRouter.post('/tanks', requireCsrf, requirePermission('liquid.store'), (req
     return;
   }
 
-  const existing = db.prepare(`SELECT id FROM liquid_tanks WHERE name = ? COLLATE NOCASE`).get(name);
+  const existing = db.prepare(`SELECT id FROM liquid_tanks WHERE plant_id = ? AND name = ? COLLATE NOCASE`).get(plantId, name);
   if (existing) {
-    res.status(409).json({ error: `Tank "${name}" already exists.` });
+    res.status(409).json({ error: `Tank "${name}" already exists in ${plantId}.` });
     return;
   }
 
   const actorName = req.auth!.user.fullName;
   db.transaction(() => {
     db.prepare(
-      `INSERT INTO liquid_tanks (name, total_capacity_kg, depth_meters, location, notes, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`
-    ).run(name, totalCapacityKg, depthMeters, location, notes, Date.now());
+      `INSERT INTO liquid_tanks (plant_id, name, total_capacity_kg, depth_meters, location, notes, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).run(plantId, name, totalCapacityKg, depthMeters, location, notes, Date.now());
 
     addLiquidAudit(
       'TANK_CREATE',
       'TANK',
       `Created ${name} (${fmtMT(totalCapacityKg / 1000)} MT, ${depthMeters}m)`,
-      actorName
+      actorName,
+      plantId
     );
   })();
 
-  res.status(201).json({ state: buildLiquidStoreState() });
+  res.status(201).json({ state: buildLiquidStoreState(plantId) });
 });
 
 liquidRouter.put('/tanks/:id', requireCsrf, requirePermission('liquid.store'), (req: Request, res: Response) => {
@@ -629,20 +678,23 @@ liquidRouter.put('/tanks/:id', requireCsrf, requirePermission('liquid.store'), (
     return;
   }
 
-  const dup = db
-    .prepare(`SELECT id FROM liquid_tanks WHERE name = ? COLLATE NOCASE AND id != ?`)
-    .get(name, tankId);
-  if (dup) {
-    res.status(409).json({ error: `Tank "${name}" already exists.` });
-    return;
-  }
-
   const actorName = req.auth!.user.fullName;
   const result = db.transaction(() => {
     const tank = db.prepare(`SELECT * FROM liquid_tanks WHERE id = ?`).get(tankId) as DbTankRow | undefined;
     if (!tank) {
       return { errorStatus: 404 as const, error: 'Tank record not found.' };
     }
+    const tankPlant = normalizePlantId(tank.plant_id, 'RIYADH');
+    if (!userCanAccessPlant(req.auth!.user, tankPlant)) {
+      return { errorStatus: 403 as const, error: 'Access denied: Tank belongs to another plant.' };
+    }
+    const dup = db
+      .prepare(`SELECT id FROM liquid_tanks WHERE plant_id = ? AND name = ? COLLATE NOCASE AND id != ?`)
+      .get(tankPlant, name, tankId);
+    if (dup) {
+      return { errorStatus: 409 as const, error: `Tank "${name}" already exists in ${tankPlant}.` };
+    }
+
     const tankTxs = db.prepare(`SELECT * FROM liquid_transactions WHERE tank_id = ?`).all(tankId) as DbTxRow[];
     const current = computeTankBalance(tank, tankTxs);
     if (totalCapacityKg < current.currentStockKg - 0.0001) {
@@ -660,9 +712,10 @@ liquidRouter.put('/tanks/:id', requireCsrf, requirePermission('liquid.store'), (
       'TANK_UPDATE',
       'TANK',
       `Updated ${name} (${fmtMT(totalCapacityKg / 1000)} MT, ${depthMeters}m)`,
-      actorName
+      actorName,
+      tankPlant
     );
-    return { ok: true };
+    return { ok: true, plantId: tankPlant };
   })();
 
   if ('errorStatus' in result && result.errorStatus) {
@@ -670,7 +723,7 @@ liquidRouter.put('/tanks/:id', requireCsrf, requirePermission('liquid.store'), (
     return;
   }
 
-  res.json({ state: buildLiquidStoreState() });
+  res.json({ state: buildLiquidStoreState(result.plantId) });
 });
 
 liquidRouter.delete('/tanks/:id', requireCsrf, requirePermission('liquid.store'), (req: Request, res: Response) => {
@@ -686,6 +739,10 @@ liquidRouter.delete('/tanks/:id', requireCsrf, requirePermission('liquid.store')
     if (!tank) {
       return { errorStatus: 404 as const, error: 'Tank record not found.' };
     }
+    const tankPlant = normalizePlantId(tank.plant_id, 'RIYADH');
+    if (!userCanAccessPlant(req.auth!.user, tankPlant)) {
+      return { errorStatus: 403 as const, error: 'Access denied: Tank belongs to another plant.' };
+    }
     const tankTxs = db.prepare(`SELECT * FROM liquid_transactions WHERE tank_id = ?`).all(tankId) as DbTxRow[];
     const computed = computeTankBalance(tank, tankTxs);
     if (computed.currentStockKg > 0.0001) {
@@ -699,8 +756,8 @@ liquidRouter.delete('/tanks/:id', requireCsrf, requirePermission('liquid.store')
     }
 
     db.prepare(`DELETE FROM liquid_tanks WHERE id = ?`).run(tankId);
-    addLiquidAudit('TANK_DELETE', 'TANK', `Deleted ${tank.name}`, actorName);
-    return { ok: true };
+    addLiquidAudit('TANK_DELETE', 'TANK', `Deleted ${tank.name}`, actorName, tankPlant);
+    return { ok: true, plantId: tankPlant };
   })();
 
   if ('errorStatus' in result && result.errorStatus) {
@@ -708,7 +765,7 @@ liquidRouter.delete('/tanks/:id', requireCsrf, requirePermission('liquid.store')
     return;
   }
 
-  res.json({ state: buildLiquidStoreState() });
+  res.json({ state: buildLiquidStoreState(result.plantId) });
 });
 
 liquidRouter.post(
@@ -732,15 +789,16 @@ liquidRouter.post(
     return;
   }
 
+  const plantId = resolveAuthorizedPlantForUser(req.auth!.user, b.plantId || req.query.plantId) || 'RIYADH';
   const actorName = req.auth!.user.fullName;
   db.transaction(() => {
     db.prepare(
       `INSERT INTO liquid_materials (name, code, description, created_at) VALUES (?, ?, ?, ?)`
     ).run(name, code, description, Date.now());
-    addLiquidAudit('CREATE', 'MATERIAL', `Added material ${name} (${code})`, actorName);
+    addLiquidAudit('CREATE', 'MATERIAL', `Added material ${name} (${code})`, actorName, plantId);
   })();
 
-  res.status(201).json({ state: buildLiquidStoreState() });
+  res.status(201).json({ state: buildLiquidStoreState(plantId) });
 });
 
 liquidRouter.put(
@@ -755,6 +813,7 @@ liquidRouter.put(
   }
 
   const b = req.body || {};
+  const plantId = resolveAuthorizedPlantForUser(req.auth!.user, b.plantId || req.query.plantId) || 'RIYADH';
   const name = upperStr(b.name);
   const code = (upperStr(b.code) || name.slice(0, 8));
   const description = upperStr(b.description);
@@ -790,7 +849,7 @@ liquidRouter.put(
       description,
       matId
     );
-    addLiquidAudit('UPDATE', 'MATERIAL', `Updated material ${old.name} -> ${name}`, actorName);
+    addLiquidAudit('UPDATE', 'MATERIAL', `Updated material ${old.name} -> ${name}`, actorName, plantId);
     return { ok: true };
   })();
 
@@ -799,7 +858,7 @@ liquidRouter.put(
     return;
   }
 
-  res.json({ state: buildLiquidStoreState() });
+  res.json({ state: buildLiquidStoreState(plantId) });
 });
 
 liquidRouter.delete(
@@ -813,6 +872,7 @@ liquidRouter.delete(
     return;
   }
 
+  const plantId = resolveAuthorizedPlantForUser(req.auth!.user, req.query.plantId || req.body?.plantId) || 'RIYADH';
   const actorName = req.auth!.user.fullName;
   const result = db.transaction(() => {
     const mat = db.prepare(`SELECT * FROM liquid_materials WHERE id = ?`).get(matId) as DbMaterialRow | undefined;
@@ -830,7 +890,7 @@ liquidRouter.delete(
     }
 
     db.prepare(`DELETE FROM liquid_materials WHERE id = ?`).run(matId);
-    addLiquidAudit('DELETE', 'MATERIAL', `Deleted material ${mat.name}`, actorName);
+    addLiquidAudit('DELETE', 'MATERIAL', `Deleted material ${mat.name}`, actorName, plantId);
     return { ok: true };
   })();
 
@@ -839,36 +899,48 @@ liquidRouter.delete(
     return;
   }
 
-  res.json({ state: buildLiquidStoreState() });
+  res.json({ state: buildLiquidStoreState(plantId) });
 });
 
 liquidRouter.put('/settings', requireCsrf, requirePermission('liquid.store'), (req: Request, res: Response) => {
   const b = req.body || {};
-  const facilityName = String(b.facilityName ?? '').trim() || 'Liquid Material Camp Store — Sector 4';
+  const plantId = resolveAuthorizedPlantForUser(req.auth!.user, b.plantId || req.query.plantId);
+  if (!plantId) {
+    res.status(403).json({ error: 'Access denied: You are not authorized to configure settings for this plant.' });
+    return;
+  }
+  const plantLabel = plantId === 'RIYADH' ? 'Riyadh Plant' : plantId === 'JEDDAH' ? 'Jeddah Plant' : `${plantId} Plant`;
+  const facilityName = String(b.facilityName ?? '').trim() || `Liquid Material Camp Store — ${plantLabel}`;
   const theme = b.theme === 'dark' ? 'dark' : 'light';
 
   const nextSettings = { facilityName, theme };
-  db.prepare(`INSERT OR REPLACE INTO liquid_settings (id, data_json, updated_at) VALUES (1, ?, ?)`).run(
+  db.prepare(`INSERT OR REPLACE INTO liquid_settings (plant_id, data_json, updated_at) VALUES (?, ?, ?)`).run(
+    plantId,
     JSON.stringify(nextSettings),
     Date.now()
   );
 
-  res.json({ state: buildLiquidStoreState() });
+  res.json({ state: buildLiquidStoreState(plantId) });
 });
 
 liquidRouter.post('/reset', requireCsrf, requirePermission('liquid.store'), (req: Request, res: Response) => {
+  const plantId = resolveAuthorizedPlantForUser(req.auth!.user, req.body?.plantId || req.query.plantId);
+  if (!plantId) {
+    res.status(403).json({ error: 'Access denied: You are not authorized to reset store data for this plant.' });
+    return;
+  }
   const actorName = req.auth!.user.fullName;
-  resetLiquidStoreToDefault(actorName);
+  resetLiquidStoreToDefault(actorName, plantId);
 
   logAudit({
     actorUserId: req.auth!.user.id,
     actorUsername: req.auth!.user.username,
     action: 'LIQUID_STORE_RESET',
     targetType: 'liquid_store',
-    targetId: 'default',
-    details: 'Reset Liquid Material Camp Store to default baseline tanks, materials, and opening stock',
+    targetId: plantId,
+    details: `[${plantId}] Reset Liquid Material Camp Store to default baseline tanks, materials, and opening stock`,
     ipAddress: getClientIp(req),
   });
 
-  res.json({ state: buildLiquidStoreState() });
+  res.json({ state: buildLiquidStoreState(plantId) });
 });

@@ -37,6 +37,14 @@ export interface LoadingSlipData {
   loadingCompletedBy?: string;
 }
 
+export interface PlantConfig {
+  id: string;
+  name: string;
+  code: string;
+  city?: string;
+  isActive: boolean;
+}
+
 export interface LoadingAlertNotification {
   id: string;
   ticketId: string;
@@ -47,10 +55,12 @@ export interface LoadingAlertNotification {
   completedBy: string;
   completedTime: string;
   createdAt: number;
+  plantId?: string;
 }
 
 export interface TicketRecord {
   id: string;
+  plantId?: string;           // e.g. 'RIYADH', 'JEDDAH'
   ticketNumber: string;       // e.g. "TK-20261110-001"
   sequenceNumber: number;     // Daily sequence (1, 2, 3...)
   date: string;               // YYYY-MM-DD
@@ -109,6 +119,19 @@ export interface MaterialMasterRecord {
   updatedAt?: number;
 }
 
+export interface PlantSpecificSettings {
+  companyName?: string;
+  companySubtitle?: string;
+  logoDataUrl?: string;
+  storeInchargeSignatureDataUrl?: string;
+  address?: string;
+  phone?: string;
+  email?: string;
+  gstin?: string;
+  ticketPrefix?: string;
+  gates?: string[];
+}
+
 export interface CompanySettings {
   companyName: string;
   companySubtitle: string;
@@ -123,6 +146,9 @@ export interface CompanySettings {
   autoPrintTokenAfterSave?: boolean; // New setting
   sessionIdleMinutes?: number;
   whatsappTemplates?: Record<string, string>;
+  plants?: PlantConfig[];
+  plantGates?: Record<string, string[]>;
+  plantSettingsMap?: Record<string, PlantSpecificSettings>;
 }
 
 export interface PublicBranding {
@@ -156,6 +182,8 @@ export interface AuthUser {
   createdAt: number;
   updatedAt: number;
   permissions: string[];
+  allowedPlants?: string[]; // ['ALL'] or e.g. ['RIYADH', 'JEDDAH']
+  defaultPlantId?: string;
   activeSessionCount?: number;
   signatureDataUrl?: string;
 }
@@ -278,10 +306,12 @@ export interface LiquidStoreState {
   transactions: LiquidTransaction[];
   auditLogs: LiquidAuditLog[];
   settings: LiquidStoreSettings;
+  plantId?: string;
 }
 
 export interface ExFactoryEntry {
   id: string;
+  plantId?: string;
   entryDate: string; // YYYY-MM-DD (automatic current date)
   delNoteNumber: string;
   customerName: string;

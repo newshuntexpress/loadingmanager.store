@@ -44,6 +44,7 @@ import {
 
 interface LiquidMaterialStoreViewProps {
   currentUser: AuthUser;
+  plantId?: string;
   companyLogoUrl?: string;
   canManageStore?: boolean;
   canManageMaterials?: boolean;
@@ -117,6 +118,7 @@ function computeClientPreviewTank(
 
 export const LiquidMaterialStoreView: React.FC<LiquidMaterialStoreViewProps> = ({
   currentUser,
+  plantId = 'RIYADH',
   companyLogoUrl,
   canManageStore = true,
   canManageMaterials = true,
@@ -210,8 +212,8 @@ export const LiquidMaterialStoreView: React.FC<LiquidMaterialStoreViewProps> = (
     try {
       const data =
         isBackgroundPoll === true
-          ? await withBackgroundPoll(() => ApiClient.getLiquidState())
-          : await ApiClient.getLiquidState();
+          ? await withBackgroundPoll(() => ApiClient.getLiquidState(plantId))
+          : await ApiClient.getLiquidState(plantId);
       setStore(data);
       setFacilityInput(data.settings.facilityName);
     } catch (err: any) {
@@ -219,7 +221,7 @@ export const LiquidMaterialStoreView: React.FC<LiquidMaterialStoreViewProps> = (
     } finally {
       setLoading(false);
     }
-  }, [showToast]);
+  }, [plantId, showToast]);
 
   useEffect(() => {
     loadState(false);
@@ -475,6 +477,7 @@ export const LiquidMaterialStoreView: React.FC<LiquidMaterialStoreViewProps> = (
     setSubmitting(true);
     try {
       const payload = {
+        plantId,
         type: txType,
         txDate,
         tankId: txTankId,
@@ -531,6 +534,7 @@ export const LiquidMaterialStoreView: React.FC<LiquidMaterialStoreViewProps> = (
     setSubmitting(true);
     try {
       const payload = {
+        plantId,
         name: tankName.trim(),
         totalCapacityKg: Number(tankCapKg),
         depthMeters: Number(tankDepthM),
@@ -560,7 +564,7 @@ export const LiquidMaterialStoreView: React.FC<LiquidMaterialStoreViewProps> = (
       message: `Delete transaction ${tx.txCode} (${fmtKG(tx.quantityKg)} KG ${tx.materialName})? Tank balance will be recalculated immediately.`,
       confirmLabel: 'Delete Transaction',
       onConfirm: async () => {
-        const res = await ApiClient.deleteLiquidTransaction(tx.id);
+        const res = await ApiClient.deleteLiquidTransaction(tx.id, plantId);
         setStore(res.state);
         showToast('success', `Deleted ${res.txCode} and recalculated tank stock.`);
       },
@@ -582,7 +586,7 @@ export const LiquidMaterialStoreView: React.FC<LiquidMaterialStoreViewProps> = (
       message: `Delete ${tank.name} permanently?`,
       confirmLabel: 'Delete Tank',
       onConfirm: async () => {
-        const res = await ApiClient.deleteLiquidTank(tank.id);
+        const res = await ApiClient.deleteLiquidTank(tank.id, plantId);
         setStore(res.state);
         showToast('success', `Deleted ${tank.name}.`);
       },
@@ -595,6 +599,7 @@ export const LiquidMaterialStoreView: React.FC<LiquidMaterialStoreViewProps> = (
     setSubmitting(true);
     try {
       const res = await ApiClient.createLiquidMaterial({
+        plantId,
         name: newMatName.trim().toUpperCase(),
         code: newMatCode.trim().toUpperCase(),
         description: newMatDesc.trim(),
@@ -616,6 +621,7 @@ export const LiquidMaterialStoreView: React.FC<LiquidMaterialStoreViewProps> = (
     setSubmitting(true);
     try {
       const res = await ApiClient.updateLiquidMaterial(mat.id, {
+        plantId,
         name: editMatName.trim().toUpperCase(),
         code: editMatCode.trim().toUpperCase(),
         description: editMatDesc.trim(),
@@ -642,7 +648,7 @@ export const LiquidMaterialStoreView: React.FC<LiquidMaterialStoreViewProps> = (
       message: `Delete material "${mat.name}" permanently?`,
       confirmLabel: 'Delete Material',
       onConfirm: async () => {
-        const res = await ApiClient.deleteLiquidMaterial(mat.id);
+        const res = await ApiClient.deleteLiquidMaterial(mat.id, plantId);
         setStore(res.state);
         showToast('success', `Deleted material ${mat.name}.`);
       },
@@ -651,7 +657,7 @@ export const LiquidMaterialStoreView: React.FC<LiquidMaterialStoreViewProps> = (
 
   const handleThemeToggle = async (theme: 'light' | 'dark') => {
     try {
-      const res = await ApiClient.updateLiquidSettings({ theme });
+      const res = await ApiClient.updateLiquidSettings({ plantId, theme });
       setStore(res.state);
     } catch (err: any) {
       showToast('error', err?.message || 'Failed to update theme.');
@@ -663,6 +669,7 @@ export const LiquidMaterialStoreView: React.FC<LiquidMaterialStoreViewProps> = (
     setSubmitting(true);
     try {
       const res = await ApiClient.updateLiquidSettings({
+        plantId,
         facilityName: facilityInput.trim() || 'Liquid Material Camp Store — Sector 4',
       });
       setStore(res.state);
@@ -680,7 +687,7 @@ export const LiquidMaterialStoreView: React.FC<LiquidMaterialStoreViewProps> = (
       message: 'Reset all 14 tanks, materials, transactions, and settings back to initial Camp Store defaults?',
       confirmLabel: 'Reset Default Data',
       onConfirm: async () => {
-        const res = await ApiClient.resetLiquidStore();
+        const res = await ApiClient.resetLiquidStore(plantId);
         setStore(res.state);
         setFacilityInput(res.state.settings.facilityName);
         setDashMaterialFilter('ALL');

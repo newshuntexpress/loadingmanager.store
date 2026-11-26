@@ -8,7 +8,7 @@ import {
   MaterialMasterRecord,
 } from '../types';
 import { ApiClient } from '../services/api';
-import { StorageService, createEmpty8Rows, getCurrentTimeString } from '../services/storage';
+import { StorageService, createEmpty8Rows, getCurrentTimeString, resolveSettingsForPlant } from '../services/storage';
 import { formatSaudiPhoneNumber } from '../utils/whatsapp';
 import { buildDriverLiveStatusUrl, generateQrPngDataUrl } from '../utils/driverStatusUrl';
 import {
@@ -95,6 +95,10 @@ export const LoadingSlipModal: React.FC<LoadingSlipModalProps> = ({
   onSave,
   onClose,
 }) => {
+  const plantSettings = useMemo(
+    () => resolveSettingsForPlant(settings, ticket.plantId),
+    [settings, ticket.plantId]
+  );
   const existingSlip = ticket.loadingSlip;
   const isSlipLocked = Boolean(existingSlip?.isLocked);
   const isOtherPreparerLocked = Boolean(
@@ -107,8 +111,8 @@ export const LoadingSlipModal: React.FC<LoadingSlipModalProps> = ({
     ? (existingSlip?.storeInchargeName || storeInchargeFullName || '').trim()
     : (storeInchargeFullName || existingSlip?.storeInchargeName || '').trim();
   const displaySignatureDataUrl = isOtherPreparerLocked
-    ? existingSlip?.storeInchargeSignatureDataUrl || settings.storeInchargeSignatureDataUrl || ''
-    : storeInchargeSignatureDataUrl || settings.storeInchargeSignatureDataUrl || '';
+    ? existingSlip?.storeInchargeSignatureDataUrl || plantSettings.storeInchargeSignatureDataUrl || ''
+    : storeInchargeSignatureDataUrl || plantSettings.storeInchargeSignatureDataUrl || '';
 
   const [delNoteNumber, setDelNoteNumber] = useState<string>(
     existingSlip?.delNoteNumber || ticket.delNoteNumber || 'A1DD00001'
@@ -556,6 +560,7 @@ export const LoadingSlipModal: React.FC<LoadingSlipModalProps> = ({
                 {isExFactory ? 'Ex-Factory Material Loading Slip' : 'Generate Material Loading Slip'}
               </h2>
               <p className="text-xs text-blue-100">
+                {plantSettings.companyName} ·{' '}
                 {isExFactory
                   ? `Ex-Factory Dispatch | Ref: ${ticket.ticketNumber} | Customer: ${ticket.transporterName || '—'} | Truck: ${ticket.truckNumber}`
                   : `Ticket: ${ticket.ticketNumber} | Gate: ${ticket.gateNumber} (Pos #${ticket.gateSequenceNumber}) | Truck: ${ticket.truckNumber}`}
@@ -598,7 +603,7 @@ export const LoadingSlipModal: React.FC<LoadingSlipModalProps> = ({
                   setDelNoteNumber(e.target.value);
                   if (validationError) setValidationError(null);
                 }}
-                placeholder="e.g. AWZR-2026/0000000001"
+                placeholder={`e.g. ${plantSettings.ticketPrefix}-2026/0000000001`}
                 className={`w-full px-3 py-1.5 text-sm font-semibold rounded-lg border focus:ring-2 focus:ring-blue-500 focus:outline-none bg-white ${
                   validationError && !delNoteNumber.trim() ? 'border-red-500 ring-2 ring-red-200' : 'border-neutral-300'
                 }`}

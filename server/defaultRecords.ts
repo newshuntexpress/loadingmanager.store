@@ -1,3 +1,8 @@
+export const DEFAULT_PLANTS = [
+  { id: 'RIYADH', name: 'Riyadh Plant', code: 'RUH', city: 'Riyadh', isActive: true },
+  { id: 'JEDDAH', name: 'Jeddah Plant', code: 'JED', city: 'Jeddah', isActive: true },
+];
+
 export const DEFAULT_APP_SETTINGS = {
   companyName: 'ARABIAN WATERPROOFING CO. AWAZEL',
   companySubtitle: 'Material Dispatch, Gate Queue & Loading Slip Management System',
@@ -9,6 +14,19 @@ export const DEFAULT_APP_SETTINGS = {
   ticketPrefix: 'AWZR',
   autoPrintTokenAfterSave: true,
   sessionIdleMinutes: 30,
+  plants: DEFAULT_PLANTS,
+  plantSettingsMap: {
+    JEDDAH: {
+      companyName: 'ARABIAN WATERPROOFING CO. AWAZEL - JEDDAH',
+      companySubtitle: 'Jeddah Plant • Material Dispatch, Gate Queue & Loading Slip Management System',
+      address: 'Jeddah Industrial City, KSA',
+      phone: '',
+      email: '',
+      gstin: '',
+      gates: ['Gate 1', 'Gate 2', 'Gate 3'],
+      ticketPrefix: 'AWZ-JED',
+    },
+  },
 };
 
 export interface SeedTicketRecord {

@@ -41,6 +41,8 @@ export interface SafeUser {
   createdAt: number;
   updatedAt: number;
   permissions: string[];
+  allowedPlants: string[];
+  defaultPlantId: string;
   activeSessionCount?: number;
   signatureDataUrl?: string;
 }
@@ -333,6 +335,103 @@ db.exec(`
   const userColNames = new Set(userCols.map((c) => c.name));
   if (!userColNames.has('signature_data_url')) {
     db.exec(`ALTER TABLE users ADD COLUMN signature_data_url TEXT DEFAULT ''`);
+  }
+  if (!userColNames.has('allowed_plants_json')) {
+    db.exec(`ALTER TABLE users ADD COLUMN allowed_plants_json TEXT DEFAULT '["RIYADH","JEDDAH"]'`);
+  }
+  if (!userColNames.has('default_plant_id')) {
+    db.exec(`ALTER TABLE users ADD COLUMN default_plant_id TEXT DEFAULT 'RIYADH'`);
+  }
+}
+
+{
+  const ticketCols = db.prepare(`PRAGMA table_info(tickets)`).all() as Array<{ name: string }>;
+  const ticketColNames = new Set(ticketCols.map((c) => c.name));
+  if (!ticketColNames.has('plant_id')) {
+    db.exec(`ALTER TABLE tickets ADD COLUMN plant_id TEXT DEFAULT 'RIYADH'`);
+  }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_tickets_plant_date ON tickets(plant_id, date)`);
+}
+
+{
+  const alertCols = db.prepare(`PRAGMA table_info(loading_alerts)`).all() as Array<{ name: string }>;
+  const alertColNames = new Set(alertCols.map((c) => c.name));
+  if (!alertColNames.has('plant_id')) {
+    db.exec(`ALTER TABLE loading_alerts ADD COLUMN plant_id TEXT DEFAULT 'RIYADH'`);
+  }
+}
+
+{
+  const exCols = db.prepare(`PRAGMA table_info(ex_factory_entries)`).all() as Array<{ name: string }>;
+  const exColNames = new Set(exCols.map((c) => c.name));
+  if (!exColNames.has('plant_id')) {
+    db.exec(`ALTER TABLE ex_factory_entries ADD COLUMN plant_id TEXT DEFAULT 'RIYADH'`);
+  }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_ex_factory_plant_date ON ex_factory_entries(plant_id, entry_date DESC, created_at DESC)`);
+}
+
+// Multi-plant migration for Liquid Store (rebuild liquid_tanks for per-plant tank names & liquid_settings per plant)
+{
+  const liqMultiMigrated = db
+    .prepare(`SELECT key FROM app_settings WHERE key = 'liquid_multi_plant_v1'`)
+    .get() as { key: string } | undefined;
+
+  if (!liqMultiMigrated) {
+    db.pragma('foreign_keys = OFF');
+    db.transaction(() => {
+      const tankCols = db.prepare(`PRAGMA table_info(liquid_tanks)`).all() as Array<{ name: string }>;
+      const tankHasPlant = tankCols.some((c) => c.name === 'plant_id');
+      if (!tankHasPlant) {
+        db.exec(`
+          CREATE TABLE liquid_tanks_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            plant_id TEXT NOT NULL DEFAULT 'RIYADH',
+            name TEXT NOT NULL COLLATE NOCASE,
+            total_capacity_kg REAL NOT NULL,
+            depth_meters REAL NOT NULL,
+            location TEXT NOT NULL,
+            notes TEXT DEFAULT '',
+            created_at INTEGER NOT NULL,
+            UNIQUE(plant_id, name)
+          );
+          INSERT INTO liquid_tanks_new (id, plant_id, name, total_capacity_kg, depth_meters, location, notes, created_at)
+          SELECT id, 'RIYADH', name, total_capacity_kg, depth_meters, location, notes, created_at FROM liquid_tanks;
+          DROP TABLE liquid_tanks;
+          ALTER TABLE liquid_tanks_new RENAME TO liquid_tanks;
+        `);
+      }
+
+      const txCols = db.prepare(`PRAGMA table_info(liquid_transactions)`).all() as Array<{ name: string }>;
+      if (!txCols.some((c) => c.name === 'plant_id')) {
+        db.exec(`ALTER TABLE liquid_transactions ADD COLUMN plant_id TEXT NOT NULL DEFAULT 'RIYADH'`);
+        db.exec(`CREATE INDEX IF NOT EXISTS idx_liquid_tx_plant ON liquid_transactions(plant_id, tx_date DESC)`);
+      }
+
+      const auditCols = db.prepare(`PRAGMA table_info(liquid_audit_logs)`).all() as Array<{ name: string }>;
+      if (!auditCols.some((c) => c.name === 'plant_id')) {
+        db.exec(`ALTER TABLE liquid_audit_logs ADD COLUMN plant_id TEXT NOT NULL DEFAULT 'RIYADH'`);
+      }
+
+      const setCols = db.prepare(`PRAGMA table_info(liquid_settings)`).all() as Array<{ name: string }>;
+      if (!setCols.some((c) => c.name === 'plant_id')) {
+        db.exec(`
+          CREATE TABLE liquid_settings_new (
+            plant_id TEXT PRIMARY KEY,
+            data_json TEXT NOT NULL,
+            updated_at INTEGER NOT NULL
+          );
+          INSERT INTO liquid_settings_new (plant_id, data_json, updated_at)
+          SELECT 'RIYADH', data_json, updated_at FROM liquid_settings;
+          DROP TABLE liquid_settings;
+          ALTER TABLE liquid_settings_new RENAME TO liquid_settings;
+        `);
+      }
+
+      db.prepare(
+        `INSERT OR REPLACE INTO app_settings (key, value_json, updated_by, updated_at) VALUES ('liquid_multi_plant_v1', ?, 'system', ?)`
+      ).run(JSON.stringify({ version: 1 }), Date.now());
+    })();
+    db.pragma('foreign_keys = ON');
   }
 }
 
@@ -915,73 +1014,84 @@ function nowLocalDateTimeString(): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-export function resetLiquidStoreToDefault(performedBy = 'System Seed'): void {
+export function resetLiquidStoreToDefault(performedBy = 'System Seed', plantId = 'RIYADH'): void {
+  const cleanPlantId = String(plantId || 'RIYADH').trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '') || 'RIYADH';
   const now = Date.now();
   const txDate = nowLocalDateTimeString();
   const dateCompact = txDate.slice(0, 10).replaceAll('-', '');
+  const plantLabel = cleanPlantId === 'RIYADH' ? 'Riyadh Plant' : cleanPlantId === 'JEDDAH' ? 'Jeddah Plant' : `${cleanPlantId} Plant`;
 
   const tx = db.transaction(() => {
-    db.prepare(`DELETE FROM liquid_transactions`).run();
-    db.prepare(`DELETE FROM liquid_tanks`).run();
-    db.prepare(`DELETE FROM liquid_materials`).run();
-    db.prepare(`DELETE FROM liquid_audit_logs`).run();
-    db.prepare(`DELETE FROM sqlite_sequence WHERE name IN ('liquid_tanks','liquid_materials','liquid_transactions','liquid_audit_logs')`).run();
+    db.prepare(`DELETE FROM liquid_transactions WHERE plant_id = ?`).run(cleanPlantId);
+    db.prepare(`DELETE FROM liquid_tanks WHERE plant_id = ?`).run(cleanPlantId);
+    db.prepare(`DELETE FROM liquid_audit_logs WHERE plant_id = ?`).run(cleanPlantId);
 
     db.prepare(
-      `INSERT OR REPLACE INTO liquid_settings (id, data_json, updated_at) VALUES (1, ?, ?)`
+      `INSERT OR REPLACE INTO liquid_settings (plant_id, data_json, updated_at) VALUES (?, ?, ?)`
     ).run(
+      cleanPlantId,
       JSON.stringify({
-        facilityName: 'Liquid Material Camp Store — Sector 4',
+        facilityName: `Liquid Material Camp Store — ${plantLabel}`,
         theme: 'light',
       }),
       now
     );
 
-    const insertMat = db.prepare(
-      `INSERT INTO liquid_materials (name, code, description, created_at) VALUES (?, ?, ?, ?)`
-    );
-    insertMat.run(
-      'ASPHALT 60/70',
-      'ASP-6070',
-      'Penetration grade bitumen 60/70 for paving and industrial applications',
-      now
-    );
-    insertMat.run(
-      'USED OIL',
-      'USE-OIL',
-      'Recovered industrial lubricating and furnace fuel oil',
-      now
-    );
+    const matCount = (db.prepare(`SELECT COUNT(*) as cnt FROM liquid_materials`).get() as { cnt: number }).cnt;
+    if (matCount === 0) {
+      const insertMat = db.prepare(
+        `INSERT OR IGNORE INTO liquid_materials (name, code, description, created_at) VALUES (?, ?, ?, ?)`
+      );
+      insertMat.run(
+        'ASPHALT 60/70',
+        'ASP-6070',
+        'Penetration grade bitumen 60/70 for paving and industrial applications',
+        now
+      );
+      insertMat.run(
+        'USED OIL',
+        'USE-OIL',
+        'Recovered industrial lubricating and furnace fuel oil',
+        now
+      );
+    }
 
     const insertTank = db.prepare(
-      `INSERT INTO liquid_tanks (name, total_capacity_kg, depth_meters, location, notes, created_at) VALUES (?, ?, ?, ?, ?, ?)`
+      `INSERT INTO liquid_tanks (plant_id, name, total_capacity_kg, depth_meters, location, notes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`
     );
     let tank1Id: number | bigint = 1;
     for (let i = 1; i <= 14; i++) {
       const info = insertTank.run(
+        cleanPlantId,
         `Tank ${String(i).padStart(2, '0')}`,
         2000000,
         7,
-        i <= 7 ? 'Main Storage Bay A' : 'Main Storage Bay B',
+        i <= 7 ? `${plantLabel} Storage Bay A` : `${plantLabel} Storage Bay B`,
         'Vertical cylindrical bulk storage tank (2,000 MT / 7m)',
         now
       );
       if (i === 1) tank1Id = info.lastInsertRowid;
     }
 
-    db.prepare(
-      `INSERT INTO liquid_transactions (
-        tx_code, type, tx_date, tank_id, material_name, quantity_kg, quantity_mt,
-        reference_number, document_number, party_name, vehicle_number, driver_name, remarks, created_by, created_at
-      ) VALUES (?, 'INWARD', ?, ?, 'ASPHALT 60/70', 500000, 500, 'OPN-2026-001', 'DOC-2026-001', 'National Bitumen Refinery', 'MH-12-TK-4401', '', 'Opening baseline inventory stock', ?, ?)`
-    ).run(`INW-${dateCompact}-0001`, txDate, tank1Id, performedBy, now);
+    const txCode =
+      cleanPlantId === 'RIYADH'
+        ? `INW-${dateCompact}-0001`
+        : `INW-${cleanPlantId.slice(0, 3)}-${dateCompact}-0001`;
 
     db.prepare(
-      `INSERT INTO liquid_audit_logs (action, entity_type, summary, performed_by, created_at) VALUES (?, ?, ?, ?, ?)`
+      `INSERT INTO liquid_transactions (
+        plant_id, tx_code, type, tx_date, tank_id, material_name, quantity_kg, quantity_mt,
+        reference_number, document_number, party_name, vehicle_number, driver_name, remarks, created_by, created_at
+      ) VALUES (?, ?, 'INWARD', ?, ?, 'ASPHALT 60/70', 500000, 500, 'OPN-2026-001', 'DOC-2026-001', 'National Bitumen Refinery', 'MH-12-TK-4401', '', 'Opening baseline inventory stock', ?, ?)`
+    ).run(cleanPlantId, txCode, txDate, tank1Id, performedBy, now);
+
+    db.prepare(
+      `INSERT INTO liquid_audit_logs (plant_id, action, entity_type, summary, performed_by, created_at) VALUES (?, ?, ?, ?, ?, ?)`
     ).run(
+      cleanPlantId,
       'CREATE',
       'TRANSACTION',
-      'Initialized Tank 01 to Tank 14 (2,000 MT / 7m each) with 500,000 KG ASPHALT 60/70 in Tank 01',
+      `[${cleanPlantId}] Initialized Tank 01 to Tank 14 (2,000 MT / 7m each) with 500,000 KG ASPHALT 60/70 in Tank 01`,
       performedBy,
       now
     );
@@ -990,10 +1100,13 @@ export function resetLiquidStoreToDefault(performedBy = 'System Seed'): void {
   tx();
 }
 
-export function seedLiquidStoreIfEmpty(): void {
-  const tankCountRow = db.prepare(`SELECT COUNT(*) as cnt FROM liquid_tanks`).get() as { cnt: number };
+export function seedLiquidStoreIfEmpty(plantId = 'RIYADH'): void {
+  const cleanPlantId = String(plantId || 'RIYADH').trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '') || 'RIYADH';
+  const tankCountRow = db
+    .prepare(`SELECT COUNT(*) as cnt FROM liquid_tanks WHERE plant_id = ?`)
+    .get(cleanPlantId) as { cnt: number };
   if (tankCountRow.cnt === 0) {
-    resetLiquidStoreToDefault('System Seed');
+    resetLiquidStoreToDefault('System Seed', cleanPlantId);
   }
 }
 
@@ -1077,11 +1190,32 @@ export function computeEffectivePermissions(userId: string, roleId: string, role
   return rolePerms.map((r) => r.key);
 }
 
+export function parseUserAllowedPlants(rawJson: string | null | undefined, roleName: string): string[] {
+  if (roleName === 'admin') return ['ALL'];
+  if (!rawJson) return ['RIYADH', 'JEDDAH'];
+  try {
+    const parsed = JSON.parse(rawJson);
+    if (!Array.isArray(parsed)) return ['RIYADH'];
+    const cleaned: string[] = [];
+    for (const item of parsed) {
+      const code = String(item || '').trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '');
+      if (!code) continue;
+      if (code === 'ALL') return ['ALL'];
+      if (!cleaned.includes(code)) cleaned.push(code.slice(0, 32));
+    }
+    return cleaned.length > 0 ? cleaned : ['RIYADH'];
+  } catch {
+    return ['RIYADH'];
+  }
+}
+
 export function getSafeUserById(userId: string): SafeUser | null {
   const row = db
     .prepare(
       `SELECT u.id, u.username, u.full_name, u.email, u.role_id, u.is_active,
-              u.must_change_password, u.last_login_at, u.signature_data_url, u.created_by, u.created_at, u.updated_at,
+              u.must_change_password, u.last_login_at, u.signature_data_url,
+              u.allowed_plants_json, u.default_plant_id,
+              u.created_by, u.created_at, u.updated_at,
               r.name as role_name, r.display_name as role_display_name
        FROM users u
        INNER JOIN roles r ON r.id = u.role_id
@@ -1098,6 +1232,8 @@ export function getSafeUserById(userId: string): SafeUser | null {
         must_change_password: number;
         last_login_at: number | null;
         signature_data_url: string | null;
+        allowed_plants_json: string | null;
+        default_plant_id: string | null;
         created_by: string | null;
         created_at: number;
         updated_at: number;
@@ -1107,6 +1243,15 @@ export function getSafeUserById(userId: string): SafeUser | null {
     | undefined;
 
   if (!row) return null;
+
+  const allowedPlants = parseUserAllowedPlants(row.allowed_plants_json, row.role_name);
+  const rawDefaultPlant = String(row.default_plant_id || '').trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '');
+  const defaultPlantId =
+    allowedPlants.includes('ALL')
+      ? rawDefaultPlant || 'RIYADH'
+      : rawDefaultPlant && allowedPlants.includes(rawDefaultPlant)
+      ? rawDefaultPlant
+      : allowedPlants[0] || 'RIYADH';
 
   return {
     id: row.id,
@@ -1124,6 +1269,8 @@ export function getSafeUserById(userId: string): SafeUser | null {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     permissions: computeEffectivePermissions(row.id, row.role_id, row.role_name),
+    allowedPlants,
+    defaultPlantId,
   };
 }
 

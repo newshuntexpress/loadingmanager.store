@@ -2,7 +2,7 @@ import express, { type Request, type Response, type NextFunction } from 'express
 import crypto from 'node:crypto';
 import { db, logAudit } from './db.ts';
 import { syncMissingMaterialsFromLoadingSlip } from './materials.ts';
-import { upperStr, normalizeLoadingSlip, normalizeLoadingType } from './normalize.ts';
+import { upperStr, normalizeLoadingSlip, normalizeLoadingType, normalizePlantId } from './normalize.ts';
 import {
   getClientIp,
   requireAuth,
@@ -10,10 +10,13 @@ import {
   requirePasswordChanged,
   requirePermission,
   requireAnyPermission,
+  resolveAuthorizedPlantForUser,
+  userCanAccessPlant,
 } from './security.ts';
 
 interface DbExFactoryRow {
   id: string;
+  plant_id?: string | null;
   entry_date: string;
   del_note_number: string;
   customer_name: string;
@@ -58,8 +61,10 @@ function parseSlipJson(raw: string | null | undefined): Record<string, any> | un
 function mapRow(r: DbExFactoryRow) {
   const loadingSlip = parseSlipJson(r.loading_slip_json);
   const loadingType = normalizeLoadingType(r.loading_type) || 'local';
+  const plantId = normalizePlantId(r.plant_id, 'RIYADH');
   return {
     id: r.id,
+    plantId,
     entryDate: r.entry_date,
     delNoteNumber: upperStr(r.del_note_number),
     customerName: upperStr(r.customer_name),
@@ -105,15 +110,35 @@ exFactoryRouter.use(
   requireAnyPermission(['ex_factory.view', 'ex_factory.create', 'ex_factory.update', 'ex_factory.delete'])
 );
 
-exFactoryRouter.get('/', requirePermission('ex_factory.view'), (_req: Request, res: Response) => {
+exFactoryRouter.get('/', requirePermission('ex_factory.view'), (req: Request, res: Response) => {
+  const reqPlantRaw = typeof req.query.plantId === 'string' ? req.query.plantId.trim().toUpperCase() : '';
+  if (reqPlantRaw && reqPlantRaw !== 'ALL' && !userCanAccessPlant(req.auth!.user, reqPlantRaw)) {
+    res.status(403).json({ error: `Access denied: You are not authorized to access ${reqPlantRaw} plant records.` });
+    return;
+  }
+
   const rows = db
     .prepare(`SELECT * FROM ex_factory_entries ORDER BY entry_date DESC, created_at DESC`)
     .all() as DbExFactoryRow[];
-  res.json({ entries: rows.map(mapRow) });
+
+  const filtered = rows.filter((r) => {
+    const pId = normalizePlantId(r.plant_id, 'RIYADH');
+    if (!userCanAccessPlant(req.auth!.user, pId)) return false;
+    if (reqPlantRaw && reqPlantRaw !== 'ALL' && pId !== reqPlantRaw) return false;
+    return true;
+  });
+
+  res.json({ entries: filtered.map(mapRow) });
 });
 
 exFactoryRouter.post('/', requirePermission('ex_factory.create'), requireCsrf, (req: Request, res: Response) => {
   const b = req.body || {};
+  const plantId = resolveAuthorizedPlantForUser(req.auth!.user, b.plantId);
+  if (!plantId) {
+    res.status(403).json({ error: 'Access denied: You are not authorized to create Ex-Factory entries for this plant.' });
+    return;
+  }
+
   const rawDate = String(b.entryDate || '').trim();
   const entryDate = /^\d{4}-\d{2}-\d{2}$/.test(rawDate) ? rawDate : getTodayPlantDateString();
   const delNoteNumber = upperStr(b.delNoteNumber);
@@ -143,11 +168,12 @@ exFactoryRouter.post('/', requirePermission('ex_factory.create'), requireCsrf, (
 
   db.prepare(
     `INSERT INTO ex_factory_entries (
-      id, entry_date, del_note_number, customer_name, loading_type, truck_number, driver_name, mobile_number, iqama_number, loading_slip_json,
+      id, plant_id, entry_date, del_note_number, customer_name, loading_type, truck_number, driver_name, mobile_number, iqama_number, loading_slip_json,
       created_by, updated_by, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?)`
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?)`
   ).run(
     id,
+    plantId,
     entryDate,
     delNoteNumber,
     customerName,
@@ -170,7 +196,7 @@ exFactoryRouter.post('/', requirePermission('ex_factory.create'), requireCsrf, (
     action: 'EX_FACTORY_CREATED',
     targetType: 'ex_factory',
     targetId: delNoteNumber,
-    details: `Saved Ex-Factory entry DN: ${delNoteNumber}, Customer: ${customerName}, Truck: ${truckNumber}`,
+    details: `[${plantId}] Saved Ex-Factory entry DN: ${delNoteNumber}, Customer: ${customerName}, Truck: ${truckNumber}`,
     ipAddress: getClientIp(req),
   });
 
@@ -182,6 +208,10 @@ exFactoryRouter.put('/:id', requirePermission('ex_factory.update'), requireCsrf,
   const existing = db.prepare(`SELECT * FROM ex_factory_entries WHERE id = ?`).get(id) as DbExFactoryRow | undefined;
   if (!existing) {
     res.status(404).json({ error: 'Ex-Factory entry not found.' });
+    return;
+  }
+  if (!userCanAccessPlant(req.auth!.user, existing.plant_id || 'RIYADH')) {
+    res.status(403).json({ error: 'Access denied: This Ex-Factory entry belongs to another plant.' });
     return;
   }
 
@@ -235,6 +265,10 @@ exFactoryRouter.put(
     const existing = db.prepare(`SELECT * FROM ex_factory_entries WHERE id = ?`).get(id) as DbExFactoryRow | undefined;
     if (!existing) {
       res.status(404).json({ error: 'Ex-Factory entry not found.' });
+      return;
+    }
+    if (!userCanAccessPlant(req.auth!.user, existing.plant_id || 'RIYADH')) {
+      res.status(403).json({ error: 'Access denied: This Ex-Factory entry belongs to another plant.' });
       return;
     }
 
@@ -314,6 +348,10 @@ exFactoryRouter.delete('/:id', requirePermission('ex_factory.delete'), requireCs
   const existing = db.prepare(`SELECT * FROM ex_factory_entries WHERE id = ?`).get(id) as DbExFactoryRow | undefined;
   if (!existing) {
     res.status(404).json({ error: 'Ex-Factory entry not found.' });
+    return;
+  }
+  if (!userCanAccessPlant(req.auth!.user, existing.plant_id || 'RIYADH')) {
+    res.status(403).json({ error: 'Access denied: This Ex-Factory entry belongs to another plant.' });
     return;
   }
 

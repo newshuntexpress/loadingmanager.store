@@ -25,19 +25,107 @@ import {
   auth,
   buildAuthUserFromFirebase,
   DEFAULT_ADMIN_EMAIL,
-  getUserProfile,
+  deleteAuthorizedUserFromFirestore,
+  getDefaultPermissionsForRole,
   isStaticNoBackendError,
+  ROLE_DISPLAY_NAME_MAP,
   signOutFromFirebase,
-  syncFirebaseUserProfileToFirestore,
+  syncAuthorizedUserToFirestore,
+  verifyFirebaseUserAuthorized,
 } from '../firebase';
-import { DEFAULT_SETTINGS, StorageService } from './storage';
+import { DEFAULT_SETTINGS, mergeSettingsWithDefaults, StorageService } from './storage';
 import {
   deleteGateTicketFromFirestore,
   deleteMaterialFromFirestore,
+  getPlantSettingsFromFirestore,
   importMaterialsBatchToFirestore,
+  listAuditLogsFromFirestore,
+  listAuthorizedUsersFromFirestore,
   saveGateTicketToFirestore,
   saveMaterialToFirestore,
+  savePlantSettingsToFirestore,
+  writeAuditLogToFirestore,
 } from './firestoreData';
+
+export const CANONICAL_ROLES: RoleOption[] = [
+  {
+    id: 'role_admin',
+    name: 'admin',
+    displayName: 'Administrator',
+    description: 'Full system authorization, user management, settings, and audit control.',
+  },
+  {
+    id: 'role_user',
+    name: 'user',
+    displayName: 'User / Operator',
+    description: 'Authorized gate queue, loading slip, and operational access.',
+  },
+  {
+    id: 'role_mmd_manager',
+    name: 'mmd_manager',
+    displayName: 'MMD Manager',
+    description:
+      'Material Management & Dispatch Manager across Gate Queue, Dispatch Details, Material Register, Material Master, Liquid Store, and Ex-Factory.',
+  },
+  {
+    id: 'role_view_only',
+    name: 'view_only',
+    displayName: 'View Only',
+    description:
+      'Read-only monitoring and reporting access across permitted sections without create, edit, or delete rights.',
+  },
+  {
+    id: 'role_forklift_operator',
+    name: 'forklift_operator',
+    displayName: 'Forklift Operator',
+    description: 'Restricted access exclusively to the Forklift Operator Loading section.',
+  },
+  {
+    id: 'role_liquid_store_operator',
+    name: 'liquid_store_operator',
+    displayName: 'Liquid Store Operator',
+    description: 'Restricted access exclusively to the Liquid Material Camp Store section.',
+  },
+  {
+    id: 'role_ex_factory_operator',
+    name: 'ex_factory_operator',
+    displayName: 'Ex-Factory Operator',
+    description: 'Restricted access exclusively to the Ex-Factory Dispatch section.',
+  },
+  {
+    id: 'role_security_guard',
+    name: 'security_guard',
+    displayName: 'Security Guard (View Only)',
+    description:
+      'Restricted View Only access exclusively to the Security Guard Gate Truck Allotment screen.',
+  },
+];
+
+export const CANONICAL_PERMISSIONS: PermissionOption[] = [
+  { id: 'perm_tickets_view', key: 'tickets.view', name: 'View Tickets & Live Gate Monitor', category: 'Operations' },
+  { id: 'perm_tickets_create', key: 'tickets.create', name: 'Create New Gate Tickets', category: 'Operations' },
+  { id: 'perm_tickets_update', key: 'tickets.update', name: 'Update Gate Status & Loading Slips', category: 'Operations' },
+  { id: 'perm_forklift_operate', key: 'forklift.operate', name: 'Forklift Operator Loading Checklist & Completion', category: 'Operations' },
+  { id: 'perm_tickets_delete', key: 'tickets.delete', name: 'Delete Ticket Records', category: 'Operations' },
+  { id: 'perm_guard_view', key: 'guard.view', name: 'View Security Guard Gate Truck Allotment Screen', category: 'Operations' },
+  { id: 'perm_slips_print', key: 'slips.print', name: 'Print & Export Loading Slips / Tokens', category: 'Documents' },
+  { id: 'perm_drivers_manage', key: 'drivers.manage', name: 'Manage Driver & Vehicle Master Directory', category: 'Operations' },
+  { id: 'perm_materials_view', key: 'materials.view', name: 'View Material Master Catalog', category: 'Operations' },
+  { id: 'perm_materials_manage', key: 'materials.manage', name: 'Manage Material Master (Add / Edit / Delete / Excel Import)', category: 'Operations' },
+  { id: 'perm_reports_view', key: 'reports.view', name: 'View Daily Reports & Export CSV', category: 'Reporting' },
+  { id: 'perm_dispatch_view', key: 'dispatch.view', name: 'View Dispatch Details (Material-Wise Summary & Export)', category: 'Reporting' },
+  { id: 'perm_material_register_view', key: 'material_register.view', name: 'View Material Register (Loading Slip Line Items)', category: 'Reporting' },
+  { id: 'perm_liquid_view', key: 'liquid.view', name: 'View Liquid Material Camp Store (Read-Only)', category: 'Operations' },
+  { id: 'perm_liquid_store', key: 'liquid.store', name: 'Manage Liquid Material Camp Store (Inward/Outward & Tanks)', category: 'Operations' },
+  { id: 'perm_liquid_materials', key: 'liquid.materials', name: 'Manage Material Master Data (Create / Edit / Delete)', category: 'Operations' },
+  { id: 'perm_ex_factory_view', key: 'ex_factory.view', name: 'View Ex-Factory Dispatch Entries', category: 'Operations' },
+  { id: 'perm_ex_factory_create', key: 'ex_factory.create', name: 'Create Ex-Factory Dispatch Entries', category: 'Operations' },
+  { id: 'perm_ex_factory_update', key: 'ex_factory.update', name: 'Update Ex-Factory Dispatch Entries', category: 'Operations' },
+  { id: 'perm_ex_factory_delete', key: 'ex_factory.delete', name: 'Delete Ex-Factory Dispatch Entries', category: 'Operations' },
+  { id: 'perm_settings_manage', key: 'settings.manage', name: 'Manage Plant & System Settings', category: 'Administration' },
+  { id: 'perm_users_manage', key: 'users.manage', name: 'Manage Users, Roles & Permissions', category: 'Administration' },
+  { id: 'perm_audit_view', key: 'audit.view', name: 'View Security Audit Logs', category: 'Administration' },
+];
 
 declare global {
   interface Window {
@@ -124,7 +212,7 @@ function readStaticSettings(): CompanySettings {
   try {
     const raw = localStorage.getItem(STATIC_SETTINGS_STORAGE_KEY);
     if (raw) {
-      return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+      return mergeSettingsWithDefaults(JSON.parse(raw) as Partial<CompanySettings>);
     }
   } catch {
     // Ignore storage read errors
@@ -133,7 +221,7 @@ function readStaticSettings(): CompanySettings {
 }
 
 function writeStaticSettings(next: CompanySettings): CompanySettings {
-  const merged = { ...DEFAULT_SETTINGS, ...next };
+  const merged = mergeSettingsWithDefaults(next);
   StorageService.saveSettings(merged);
   try {
     localStorage.setItem(STATIC_SETTINGS_STORAGE_KEY, JSON.stringify(merged));
@@ -443,7 +531,8 @@ export const ApiClient = {
         throw err;
       }
       staticFirebaseOnlyMode = true;
-      const settings = readStaticSettings();
+      const cloudSettings = await getPlantSettingsFromFirestore().catch(() => null);
+      const settings = cloudSettings ? writeStaticSettings(cloudSettings) : readStaticSettings();
       const branding: PublicBranding = {
         companyName: settings.companyName,
         companySubtitle: settings.companySubtitle,
@@ -451,8 +540,22 @@ export const ApiClient = {
       };
       const fbUser = auth.currentUser;
       if (fbUser && fbUser.emailVerified) {
-        const profile = await getUserProfile(fbUser.uid).catch(() => null);
-        const user = buildAuthUserFromFirebase(fbUser, profile);
+        const authRes = await verifyFirebaseUserAuthorized(fbUser);
+        if (!authRes.authorized) {
+          clearPersistedLoginState();
+          await signOutFromFirebase().catch(() => {});
+          return {
+            authenticated: false,
+            needsSetup: false,
+            branding,
+            reason: authRes.reason === 'disabled' ? 'account_disabled' : 'not_authorized',
+          };
+        }
+        const user = buildAuthUserFromFirebase(fbUser, authRes.record);
+        persistLoginState({
+          user,
+          csrfToken: 'firebase-static',
+        });
         return {
           authenticated: true,
           needsSetup: false,
@@ -576,10 +679,17 @@ export const ApiClient = {
       }
       staticFirebaseOnlyMode = true;
       const fbUser = auth.currentUser;
-      const isDefaultAdmin = (fbUser.email || '').toLowerCase() === DEFAULT_ADMIN_EMAIL;
-      await syncFirebaseUserProfileToFirestore(fbUser, isDefaultAdmin ? 'admin' : 'user').catch(() => {});
-      const profile = await getUserProfile(fbUser.uid).catch(() => null);
-      const user = buildAuthUserFromFirebase(fbUser, profile);
+      const authRes = await verifyFirebaseUserAuthorized(fbUser);
+      if (!authRes.authorized) {
+        clearPersistedLoginState();
+        await signOutFromFirebase().catch(() => {});
+        throw new ApiError(
+          authRes.message,
+          403,
+          authRes.reason === 'disabled' ? 'ACCOUNT_DISABLED' : 'NOT_AUTHORIZED'
+        );
+      }
+      const user = buildAuthUserFromFirebase(fbUser, authRes.record);
       persistLoginState({
         user,
         csrfToken: 'firebase-static',
@@ -642,10 +752,17 @@ export const ApiClient = {
 
   // Admin User Management & Audit
   async getRolesAndPermissions(): Promise<{ roles: RoleOption[]; permissions: PermissionOption[] }> {
+    if (staticFirebaseOnlyMode) {
+      return { roles: CANONICAL_ROLES, permissions: CANONICAL_PERMISSIONS };
+    }
     return request('/api/admin/roles');
   },
 
   async getUsers(): Promise<{ users: AuthUser[] }> {
+    if (staticFirebaseOnlyMode) {
+      const users = await listAuthorizedUsersFromFirestore();
+      return { users };
+    }
     return request('/api/admin/users');
   },
 
@@ -658,8 +775,53 @@ export const ApiClient = {
     roleName: UserRoleName;
     isActive: boolean;
     permissions?: string[];
+    allowedPlants?: string[];
+    defaultPlantId?: string;
     signatureDataUrl?: string;
   }): Promise<{ user: AuthUser }> {
+    if (staticFirebaseOnlyMode) {
+      const now = Date.now();
+      const roleName = payload.roleName || 'user';
+      const allowedPlants =
+        roleName === 'admin'
+          ? ['ALL']
+          : Array.isArray(payload.allowedPlants) && payload.allowedPlants.length > 0
+          ? payload.allowedPlants
+          : ['RIYADH'];
+      const defaultPlantId =
+        payload.defaultPlantId ||
+        (allowedPlants.includes('ALL') ? 'RIYADH' : allowedPlants[0] || 'RIYADH');
+      const user: AuthUser = {
+        id: `usr_${now}_${Math.random().toString(36).slice(2, 6)}`,
+        username: payload.username.trim().toLowerCase(),
+        fullName: payload.fullName.trim(),
+        email: (payload.email || '').trim().toLowerCase(),
+        roleId: `role_${roleName}`,
+        roleName,
+        roleDisplayName: ROLE_DISPLAY_NAME_MAP[roleName] || 'User / Operator',
+        isActive: Boolean(payload.isActive),
+        mustChangePassword: false,
+        lastLoginAt: null,
+        signatureDataUrl: payload.signatureDataUrl || '',
+        createdBy: auth.currentUser?.email || 'admin',
+        createdAt: now,
+        updatedAt: now,
+        permissions:
+          Array.isArray(payload.permissions) && payload.permissions.length > 0
+            ? payload.permissions
+            : getDefaultPermissionsForRole(roleName),
+        allowedPlants,
+        defaultPlantId,
+      };
+      await syncAuthorizedUserToFirestore(user, auth.currentUser?.email || 'admin');
+      await writeAuditLogToFirestore({
+        action: 'USER_CREATED',
+        targetType: 'user',
+        targetId: user.id,
+        details: `Created user ${user.username} (${user.email || 'no-email'}) [${allowedPlants.join(', ')}]`,
+      });
+      return { user };
+    }
     return request('/api/admin/users', {
       method: 'POST',
       body: JSON.stringify(payload),
@@ -673,9 +835,59 @@ export const ApiClient = {
       email?: string;
       roleName?: UserRoleName;
       isActive?: boolean;
+      allowedPlants?: string[];
+      defaultPlantId?: string;
       signatureDataUrl?: string;
     }
   ): Promise<{ user: AuthUser }> {
+    if (staticFirebaseOnlyMode) {
+      const existingList = await listAuthorizedUsersFromFirestore();
+      const existing = existingList.find((u) => u.id === userId);
+      if (!existing) {
+        throw new ApiError('User not found in Firestore allowlist.', 404);
+      }
+      const nextRole = payload.roleName ?? existing.roleName;
+      const allowedPlants =
+        nextRole === 'admin'
+          ? ['ALL']
+          : payload.allowedPlants ?? existing.allowedPlants ?? ['RIYADH'];
+      const defaultPlantId =
+        payload.defaultPlantId ??
+        existing.defaultPlantId ??
+        (allowedPlants.includes('ALL') ? 'RIYADH' : allowedPlants[0] || 'RIYADH');
+      const roleChanged = payload.roleName && payload.roleName !== existing.roleName;
+      const updated: AuthUser = {
+        ...existing,
+        fullName: payload.fullName !== undefined ? payload.fullName.trim() : existing.fullName,
+        email: payload.email !== undefined ? payload.email.trim().toLowerCase() : existing.email,
+        roleId: `role_${nextRole}`,
+        roleName: nextRole,
+        roleDisplayName: ROLE_DISPLAY_NAME_MAP[nextRole] || existing.roleDisplayName,
+        isActive: payload.isActive !== undefined ? Boolean(payload.isActive) : existing.isActive,
+        signatureDataUrl:
+          payload.signatureDataUrl !== undefined
+            ? payload.signatureDataUrl
+            : existing.signatureDataUrl,
+        allowedPlants,
+        defaultPlantId,
+        permissions: roleChanged
+          ? getDefaultPermissionsForRole(nextRole)
+          : existing.permissions,
+        updatedAt: Date.now(),
+      };
+      await syncAuthorizedUserToFirestore(
+        updated,
+        auth.currentUser?.email || 'admin',
+        existing.email
+      );
+      await writeAuditLogToFirestore({
+        action: 'USER_UPDATED',
+        targetType: 'user',
+        targetId: updated.id,
+        details: `Updated user ${updated.username} (active=${updated.isActive}, plants=${allowedPlants.join(', ')})`,
+      });
+      return { user: updated };
+    }
     return request(`/api/admin/users/${encodeURIComponent(userId)}`, {
       method: 'PATCH',
       body: JSON.stringify(payload),
@@ -683,6 +895,14 @@ export const ApiClient = {
   },
 
   async uploadUserSignature(userId: string, signatureDataUrl: string): Promise<{ user: AuthUser }> {
+    if (staticFirebaseOnlyMode) {
+      const existingList = await listAuthorizedUsersFromFirestore();
+      const existing = existingList.find((u) => u.id === userId);
+      if (!existing) throw new ApiError('User not found.', 404);
+      const updated: AuthUser = { ...existing, signatureDataUrl, updatedAt: Date.now() };
+      await syncAuthorizedUserToFirestore(updated, auth.currentUser?.email || 'admin', existing.email);
+      return { user: updated };
+    }
     return request(`/api/admin/users/${encodeURIComponent(userId)}/signature`, {
       method: 'PUT',
       body: JSON.stringify({ signatureDataUrl }),
@@ -690,12 +910,34 @@ export const ApiClient = {
   },
 
   async deleteUserSignature(userId: string): Promise<{ user: AuthUser }> {
+    if (staticFirebaseOnlyMode) {
+      const existingList = await listAuthorizedUsersFromFirestore();
+      const existing = existingList.find((u) => u.id === userId);
+      if (!existing) throw new ApiError('User not found.', 404);
+      const updated: AuthUser = { ...existing, signatureDataUrl: '', updatedAt: Date.now() };
+      await syncAuthorizedUserToFirestore(updated, auth.currentUser?.email || 'admin', existing.email);
+      return { user: updated };
+    }
     return request(`/api/admin/users/${encodeURIComponent(userId)}/signature`, {
       method: 'DELETE',
     });
   },
 
   async updateUserPermissions(userId: string, permissions: string[]): Promise<{ user: AuthUser }> {
+    if (staticFirebaseOnlyMode) {
+      const existingList = await listAuthorizedUsersFromFirestore();
+      const existing = existingList.find((u) => u.id === userId);
+      if (!existing) throw new ApiError('User not found.', 404);
+      const updated: AuthUser = { ...existing, permissions, updatedAt: Date.now() };
+      await syncAuthorizedUserToFirestore(updated, auth.currentUser?.email || 'admin', existing.email);
+      await writeAuditLogToFirestore({
+        action: 'PERMISSIONS_UPDATED',
+        targetType: 'user',
+        targetId: updated.id,
+        details: `Updated ${permissions.length} permissions for ${updated.username}`,
+      });
+      return { user: updated };
+    }
     return request(`/api/admin/users/${encodeURIComponent(userId)}/permissions`, {
       method: 'PUT',
       body: JSON.stringify({ permissions }),
@@ -703,6 +945,12 @@ export const ApiClient = {
   },
 
   async resetUserPassword(userId: string, temporaryPassword: string): Promise<{ ok: boolean; user: AuthUser }> {
+    if (staticFirebaseOnlyMode) {
+      throw new ApiError(
+        'Local password reset requires the Node.js backend server. In static Firebase hosting, users authenticate with their allowlisted Google account.',
+        400
+      );
+    }
     return request(`/api/admin/users/${encodeURIComponent(userId)}/reset-password`, {
       method: 'POST',
       body: JSON.stringify({ temporaryPassword }),
@@ -710,18 +958,46 @@ export const ApiClient = {
   },
 
   async revokeUserSessions(userId: string): Promise<{ ok: boolean }> {
+    if (staticFirebaseOnlyMode) {
+      await writeAuditLogToFirestore({
+        action: 'SESSIONS_REVOKED',
+        targetType: 'user',
+        targetId: userId,
+        details: `Revoked sessions for user ${userId}`,
+      });
+      return { ok: true };
+    }
     return request(`/api/admin/users/${encodeURIComponent(userId)}/revoke-sessions`, {
       method: 'POST',
     });
   },
 
   async deleteUser(userId: string): Promise<{ ok: boolean }> {
+    if (staticFirebaseOnlyMode) {
+      const existingList = await listAuthorizedUsersFromFirestore();
+      const existing = existingList.find((u) => u.id === userId);
+      if (existing && (existing.email || '').toLowerCase() === DEFAULT_ADMIN_EMAIL) {
+        throw new ApiError('Primary administrator account cannot be deleted.', 400);
+      }
+      await deleteAuthorizedUserFromFirestore(userId, existing?.email);
+      await writeAuditLogToFirestore({
+        action: 'USER_DELETED',
+        targetType: 'user',
+        targetId: userId,
+        details: `Deleted user ${existing?.username || userId} (${existing?.email || 'no-email'})`,
+      });
+      return { ok: true };
+    }
     return request(`/api/admin/users/${encodeURIComponent(userId)}`, {
       method: 'DELETE',
     });
   },
 
   async getAuditLogs(params?: { action?: string; search?: string; limit?: number }): Promise<{ logs: AuditLogEntry[] }> {
+    if (staticFirebaseOnlyMode) {
+      const logs = await listAuditLogsFromFirestore(params);
+      return { logs };
+    }
     const qs = new URLSearchParams();
     if (params?.action) qs.set('action', params.action);
     if (params?.search) qs.set('search', params.search);
@@ -731,15 +1007,23 @@ export const ApiClient = {
   },
 
   async getActiveSessions(): Promise<{ sessions: ActiveSessionInfo[] }> {
+    if (staticFirebaseOnlyMode) {
+      return { sessions: [] };
+    }
     return request('/api/admin/sessions');
   },
 
   // Application Data
-  async getTickets(): Promise<TicketRecord[]> {
+  async getTickets(plantId?: string): Promise<TicketRecord[]> {
     if (staticFirebaseOnlyMode) {
-      return StorageService.getTickets();
+      const all = StorageService.getTickets();
+      if (plantId && plantId !== 'ALL') {
+        return all.filter((t) => (t.plantId || 'RIYADH').toUpperCase() === plantId.toUpperCase());
+      }
+      return all;
     }
-    const res = await request<{ tickets: TicketRecord[] }>('/api/tickets');
+    const qs = plantId && plantId !== 'ALL' ? `?plantId=${encodeURIComponent(plantId)}` : '';
+    const res = await request<{ tickets: TicketRecord[] }>(`/api/tickets${qs}`);
     return Array.isArray(res?.tickets) ? res.tickets : [];
   },
 
@@ -1158,7 +1442,8 @@ export const ApiClient = {
 
   async getSettings(): Promise<{ settings: CompanySettings | null; defaultSettings: CompanySettings | null }> {
     if (staticFirebaseOnlyMode) {
-      const s = readStaticSettings();
+      const cloud = await getPlantSettingsFromFirestore().catch(() => null);
+      const s = cloud ? writeStaticSettings(cloud) : readStaticSettings();
       return { settings: s, defaultSettings: DEFAULT_SETTINGS };
     }
     return request('/api/settings');
@@ -1166,7 +1451,9 @@ export const ApiClient = {
 
   async saveSettings(settings: CompanySettings): Promise<CompanySettings> {
     if (staticFirebaseOnlyMode) {
-      return writeStaticSettings(settings);
+      const saved = writeStaticSettings(settings);
+      await savePlantSettingsToFirestore(saved).catch(() => {});
+      return saved;
     }
     const res = await request<{ settings: CompanySettings }>('/api/settings', {
       method: 'PUT',
@@ -1177,7 +1464,9 @@ export const ApiClient = {
 
   async saveAsDefaultSettings(settings: CompanySettings): Promise<CompanySettings> {
     if (staticFirebaseOnlyMode) {
-      return writeStaticSettings(settings);
+      const saved = writeStaticSettings(settings);
+      await savePlantSettingsToFirestore(saved).catch(() => {});
+      return saved;
     }
     const res = await request<{ settings: CompanySettings }>('/api/settings/default', {
       method: 'PUT',
@@ -1232,12 +1521,14 @@ export const ApiClient = {
     }
   },
 
-  // Liquid Material Camp Store
-  async getLiquidState(): Promise<LiquidStoreState> {
-    return request<LiquidStoreState>('/api/liquid/state');
+  // Liquid Material Camp Store (plant-scoped)
+  async getLiquidState(plantId?: string): Promise<LiquidStoreState> {
+    const qs = plantId && plantId !== 'ALL' ? `?plantId=${encodeURIComponent(plantId)}` : '';
+    return request<LiquidStoreState>(`/api/liquid/state${qs}`);
   },
 
   async createLiquidTransaction(payload: {
+    plantId?: string;
     type: 'INWARD' | 'OUTWARD';
     txDate: string;
     tankId: number;
@@ -1250,7 +1541,8 @@ export const ApiClient = {
     driverName?: string;
     remarks?: string;
   }): Promise<{ state: LiquidStoreState; txCode: string }> {
-    return request<{ state: LiquidStoreState; txCode: string }>('/api/liquid/transactions', {
+    const qs = payload.plantId && payload.plantId !== 'ALL' ? `?plantId=${encodeURIComponent(payload.plantId)}` : '';
+    return request<{ state: LiquidStoreState; txCode: string }>(`/api/liquid/transactions${qs}`, {
       method: 'POST',
       body: JSON.stringify(payload),
     });
@@ -1259,6 +1551,7 @@ export const ApiClient = {
   async updateLiquidTransaction(
     id: number,
     payload: {
+      plantId?: string;
       type: 'INWARD' | 'OUTWARD';
       txDate: string;
       tankId: number;
@@ -1272,26 +1565,30 @@ export const ApiClient = {
       remarks?: string;
     }
   ): Promise<{ state: LiquidStoreState; txCode: string }> {
-    return request<{ state: LiquidStoreState; txCode: string }>(`/api/liquid/transactions/${id}`, {
+    const qs = payload.plantId && payload.plantId !== 'ALL' ? `?plantId=${encodeURIComponent(payload.plantId)}` : '';
+    return request<{ state: LiquidStoreState; txCode: string }>(`/api/liquid/transactions/${id}${qs}`, {
       method: 'PUT',
       body: JSON.stringify(payload),
     });
   },
 
-  async deleteLiquidTransaction(id: number): Promise<{ state: LiquidStoreState; txCode: string }> {
-    return request<{ state: LiquidStoreState; txCode: string }>(`/api/liquid/transactions/${id}`, {
+  async deleteLiquidTransaction(id: number, plantId?: string): Promise<{ state: LiquidStoreState; txCode: string }> {
+    const qs = plantId && plantId !== 'ALL' ? `?plantId=${encodeURIComponent(plantId)}` : '';
+    return request<{ state: LiquidStoreState; txCode: string }>(`/api/liquid/transactions/${id}${qs}`, {
       method: 'DELETE',
     });
   },
 
   async createLiquidTank(payload: {
+    plantId?: string;
     name: string;
     totalCapacityKg: number;
     depthMeters: number;
     location: string;
     notes?: string;
   }): Promise<{ state: LiquidStoreState }> {
-    return request<{ state: LiquidStoreState }>('/api/liquid/tanks', {
+    const qs = payload.plantId && payload.plantId !== 'ALL' ? `?plantId=${encodeURIComponent(payload.plantId)}` : '';
+    return request<{ state: LiquidStoreState }>(`/api/liquid/tanks${qs}`, {
       method: 'POST',
       body: JSON.stringify(payload),
     });
@@ -1300,6 +1597,7 @@ export const ApiClient = {
   async updateLiquidTank(
     id: number,
     payload: {
+      plantId?: string;
       name: string;
       totalCapacityKg: number;
       depthMeters: number;
@@ -1307,24 +1605,28 @@ export const ApiClient = {
       notes?: string;
     }
   ): Promise<{ state: LiquidStoreState }> {
-    return request<{ state: LiquidStoreState }>(`/api/liquid/tanks/${id}`, {
+    const qs = payload.plantId && payload.plantId !== 'ALL' ? `?plantId=${encodeURIComponent(payload.plantId)}` : '';
+    return request<{ state: LiquidStoreState }>(`/api/liquid/tanks/${id}${qs}`, {
       method: 'PUT',
       body: JSON.stringify(payload),
     });
   },
 
-  async deleteLiquidTank(id: number): Promise<{ state: LiquidStoreState }> {
-    return request<{ state: LiquidStoreState }>(`/api/liquid/tanks/${id}`, {
+  async deleteLiquidTank(id: number, plantId?: string): Promise<{ state: LiquidStoreState }> {
+    const qs = plantId && plantId !== 'ALL' ? `?plantId=${encodeURIComponent(plantId)}` : '';
+    return request<{ state: LiquidStoreState }>(`/api/liquid/tanks/${id}${qs}`, {
       method: 'DELETE',
     });
   },
 
   async createLiquidMaterial(payload: {
+    plantId?: string;
     name: string;
     code?: string;
     description?: string;
   }): Promise<{ state: LiquidStoreState }> {
-    return request<{ state: LiquidStoreState }>('/api/liquid/materials', {
+    const qs = payload.plantId && payload.plantId !== 'ALL' ? `?plantId=${encodeURIComponent(payload.plantId)}` : '';
+    return request<{ state: LiquidStoreState }>(`/api/liquid/materials${qs}`, {
       method: 'POST',
       body: JSON.stringify(payload),
     });
@@ -1333,43 +1635,50 @@ export const ApiClient = {
   async updateLiquidMaterial(
     id: number,
     payload: {
+      plantId?: string;
       name: string;
       code?: string;
       description?: string;
     }
   ): Promise<{ state: LiquidStoreState }> {
-    return request<{ state: LiquidStoreState }>(`/api/liquid/materials/${id}`, {
+    const qs = payload.plantId && payload.plantId !== 'ALL' ? `?plantId=${encodeURIComponent(payload.plantId)}` : '';
+    return request<{ state: LiquidStoreState }>(`/api/liquid/materials/${id}${qs}`, {
       method: 'PUT',
       body: JSON.stringify(payload),
     });
   },
 
-  async deleteLiquidMaterial(id: number): Promise<{ state: LiquidStoreState }> {
-    return request<{ state: LiquidStoreState }>(`/api/liquid/materials/${id}`, {
+  async deleteLiquidMaterial(id: number, plantId?: string): Promise<{ state: LiquidStoreState }> {
+    const qs = plantId && plantId !== 'ALL' ? `?plantId=${encodeURIComponent(plantId)}` : '';
+    return request<{ state: LiquidStoreState }>(`/api/liquid/materials/${id}${qs}`, {
       method: 'DELETE',
     });
   },
 
-  async updateLiquidSettings(payload: Partial<LiquidStoreSettings>): Promise<{ state: LiquidStoreState }> {
-    return request<{ state: LiquidStoreState }>('/api/liquid/settings', {
+  async updateLiquidSettings(payload: Partial<LiquidStoreSettings> & { plantId?: string }): Promise<{ state: LiquidStoreState }> {
+    const qs = payload.plantId && payload.plantId !== 'ALL' ? `?plantId=${encodeURIComponent(payload.plantId)}` : '';
+    return request<{ state: LiquidStoreState }>(`/api/liquid/settings${qs}`, {
       method: 'PUT',
       body: JSON.stringify(payload),
     });
   },
 
-  async resetLiquidStore(): Promise<{ state: LiquidStoreState }> {
-    return request<{ state: LiquidStoreState }>('/api/liquid/reset', {
+  async resetLiquidStore(plantId?: string): Promise<{ state: LiquidStoreState }> {
+    const qs = plantId && plantId !== 'ALL' ? `?plantId=${encodeURIComponent(plantId)}` : '';
+    return request<{ state: LiquidStoreState }>(`/api/liquid/reset${qs}`, {
       method: 'POST',
     });
   },
 
-  // Ex-Factory Dispatch Entries
-  async getExFactoryEntries(): Promise<ExFactoryEntry[]> {
-    const res = await request<{ entries: ExFactoryEntry[] }>('/api/ex-factory');
+  // Ex-Factory Dispatch Entries (plant-scoped)
+  async getExFactoryEntries(plantId?: string): Promise<ExFactoryEntry[]> {
+    const qs = plantId && plantId !== 'ALL' ? `?plantId=${encodeURIComponent(plantId)}` : '';
+    const res = await request<{ entries: ExFactoryEntry[] }>(`/api/ex-factory${qs}`);
     return res.entries;
   },
 
   async createExFactoryEntry(payload: {
+    plantId?: string;
     entryDate?: string;
     delNoteNumber: string;
     customerName: string;
@@ -1389,6 +1698,7 @@ export const ApiClient = {
   async updateExFactoryEntry(
     id: string,
     payload: {
+      plantId?: string;
       entryDate?: string;
       delNoteNumber: string;
       customerName: string;

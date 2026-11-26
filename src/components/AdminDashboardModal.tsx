@@ -4,12 +4,15 @@ import {
   AuditLogEntry,
   AuthUser,
   PermissionOption,
+  PlantConfig,
   RoleOption,
   UserRoleName,
 } from '../types';
-import { ApiClient } from '../services/api';
+import { ApiClient, isStaticFirebaseOnlyMode } from '../services/api';
+import { DEFAULT_PLANTS } from '../services/storage';
 import { processSignatureFile } from '../utils/logo';
 import {
+  auth,
   DEFAULT_ADMIN_EMAIL,
   deleteAuthorizedUserFromFirestore,
   syncAuthorizedUserToFirestore,
@@ -34,10 +37,12 @@ import {
   Upload,
   PenTool,
   Sliders,
+  MapPin,
 } from 'lucide-react';
 
 interface AdminDashboardModalProps {
   currentUser: AuthUser;
+  plants?: PlantConfig[];
   onClose: () => void;
   onUsersUpdated?: () => void;
 }
@@ -104,9 +109,12 @@ const SECTION_PRESETS: SectionPreset[] = [
 
 export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
   currentUser,
+  plants = DEFAULT_PLANTS,
   onClose,
   onUsersUpdated,
 }) => {
+  const plantOptions = plants && plants.length > 0 ? plants : DEFAULT_PLANTS;
+  const staticMode = isStaticFirebaseOnlyMode();
   const [activeTab, setActiveTab] = useState<AdminTab>('users');
   const [users, setUsers] = useState<AuthUser[]>([]);
   const [roles, setRoles] = useState<RoleOption[]>([]);
@@ -136,6 +144,8 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
     'dispatch.view',
     'material_register.view',
   ]);
+  const [newAllowedPlants, setNewAllowedPlants] = useState<string[]>(['RIYADH']);
+  const [newDefaultPlantId, setNewDefaultPlantId] = useState<string>('RIYADH');
   const [newSignatureDataUrl, setNewSignatureDataUrl] = useState('');
   const [creating, setCreating] = useState(false);
   const createSigRef = useRef<HTMLInputElement>(null);
@@ -146,6 +156,8 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
   const [editEmail, setEditEmail] = useState('');
   const [editRoleName, setEditRoleName] = useState<UserRoleName>('user');
   const [editIsActive, setEditIsActive] = useState(true);
+  const [editAllowedPlants, setEditAllowedPlants] = useState<string[]>(['RIYADH']);
+  const [editDefaultPlantId, setEditDefaultPlantId] = useState<string>('RIYADH');
   const [editSignatureDataUrl, setEditSignatureDataUrl] = useState('');
   const [savingEdit, setSavingEdit] = useState(false);
   const editSigRef = useRef<HTMLInputElement>(null);
@@ -166,6 +178,26 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
     setTimeout(() => setFeedback(null), 5000);
   };
 
+  const togglePlantInList = (currentList: string[], plantId: string): string[] => {
+    if (plantId === 'ALL') {
+      return currentList.includes('ALL') ? [plantOptions[0]?.id || 'RIYADH'] : ['ALL'];
+    }
+    const withoutAll = currentList.filter((p) => p !== 'ALL');
+    if (withoutAll.includes(plantId)) {
+      const next = withoutAll.filter((p) => p !== plantId);
+      return next.length > 0 ? next : [plantId];
+    }
+    return [...withoutAll, plantId];
+  };
+
+  const resolveDefaultPlantForList = (allowed: string[], currentDef: string): string => {
+    if (allowed.includes('ALL')) {
+      return currentDef || plantOptions[0]?.id || 'RIYADH';
+    }
+    if (allowed.includes(currentDef)) return currentDef;
+    return allowed[0] || plantOptions[0]?.id || 'RIYADH';
+  };
+
   const loadAll = useCallback(async () => {
     setLoading(true);
     try {
@@ -175,17 +207,41 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
         ApiClient.getAuditLogs({ limit: 150 }).catch(() => ({ logs: [] })),
         ApiClient.getActiveSessions().catch(() => ({ sessions: [] })),
       ]);
-      setUsers(usersRes.users || []);
+      const loadedUsers = usersRes.users || [];
+      setUsers(loadedUsers);
       setRoles(rolesRes.roles || []);
       setPermissions(rolesRes.permissions || []);
       setAuditLogs(logsRes.logs || []);
       setSessions(sessRes.sessions || []);
+
+      // Mirror SQLite users to Firestore allowlist whenever signed into Firebase
+      if (!isStaticFirebaseOnlyMode() && auth.currentUser?.emailVerified && loadedUsers.length > 0) {
+        void Promise.all(
+          loadedUsers.map((u) =>
+            syncAuthorizedUserToFirestore(
+              {
+                id: u.id,
+                username: u.username,
+                fullName: u.fullName,
+                email: u.email,
+                roleName: u.roleName,
+                isActive: u.isActive,
+                permissions: u.permissions,
+                allowedPlants: u.allowedPlants,
+                defaultPlantId: u.defaultPlantId,
+                signatureDataUrl: u.signatureDataUrl,
+              },
+              currentUser.email || currentUser.username
+            ).catch(() => {})
+          )
+        );
+      }
     } catch (err: any) {
       showToast('error', err?.message || 'Failed to load user & security data.');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [currentUser.email, currentUser.username]);
 
   useEffect(() => {
     void loadAll();
@@ -273,6 +329,8 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
     e.preventDefault();
     setCreating(true);
     try {
+      const effectivePlants = newRoleName === 'admin' ? ['ALL'] : newAllowedPlants;
+      const effectiveDefault = resolveDefaultPlantForList(effectivePlants, newDefaultPlantId);
       const res = await ApiClient.createUser({
         username: newUsername.trim(),
         fullName: newFullName.trim(),
@@ -282,27 +340,36 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
         roleName: newRoleName,
         isActive: true,
         permissions: newRoleName === 'admin' ? undefined : newSelectedPerms,
+        allowedPlants: effectivePlants,
+        defaultPlantId: effectiveDefault,
         signatureDataUrl: newSignatureDataUrl || undefined,
       });
 
-      // Best-effort sync to Firestore authorized_users collection if signed in with Firebase
-      await syncAuthorizedUserToFirestore(
-        {
-          id: res.user.id,
-          username: res.user.username,
-          fullName: res.user.fullName,
-          email: res.user.email,
-          roleName: res.user.roleName,
-          isActive: res.user.isActive,
-        },
-        currentUser.email || currentUser.username
-      ).catch(() => {});
+      if (!isStaticFirebaseOnlyMode()) {
+        await syncAuthorizedUserToFirestore(
+          {
+            id: res.user.id,
+            username: res.user.username,
+            fullName: res.user.fullName,
+            email: res.user.email,
+            roleName: res.user.roleName,
+            isActive: res.user.isActive,
+            permissions: res.user.permissions,
+            allowedPlants: res.user.allowedPlants,
+            defaultPlantId: res.user.defaultPlantId,
+            signatureDataUrl: res.user.signatureDataUrl,
+          },
+          currentUser.email || currentUser.username
+        ).catch(() => {});
+      }
 
       setNewUsername('');
       setNewFullName('');
       setNewEmail('');
       setNewTempPassword('');
       setNewSignatureDataUrl('');
+      setNewAllowedPlants(['RIYADH']);
+      setNewDefaultPlantId('RIYADH');
       setShowCreateForm(false);
       showToast('success', `User "@${res.user.username}" created with "${res.user.roleDisplayName}" access.`);
       await loadAll();
@@ -315,11 +382,19 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
   };
 
   const openEditModal = (u: AuthUser) => {
+    const initialPlants =
+      u.roleName === 'admin'
+        ? ['ALL']
+        : Array.isArray(u.allowedPlants) && u.allowedPlants.length > 0
+        ? u.allowedPlants
+        : ['RIYADH'];
     setEditingUser(u);
     setEditFullName(u.fullName);
     setEditEmail(u.email || '');
     setEditRoleName((u.roleName as UserRoleName) || 'user');
     setEditIsActive(u.isActive);
+    setEditAllowedPlants(initialPlants);
+    setEditDefaultPlantId(resolveDefaultPlantForList(initialPlants, u.defaultPlantId || 'RIYADH'));
     setEditSignatureDataUrl(u.signatureDataUrl || '');
   };
 
@@ -328,24 +403,35 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
     if (!editingUser) return;
     setSavingEdit(true);
     try {
+      const effectivePlants = editRoleName === 'admin' ? ['ALL'] : editAllowedPlants;
+      const effectiveDefault = resolveDefaultPlantForList(effectivePlants, editDefaultPlantId);
       const res = await ApiClient.updateUser(editingUser.id, {
         fullName: editFullName.trim(),
         email: editEmail.trim(),
         roleName: editRoleName,
         isActive: editIsActive,
+        allowedPlants: effectivePlants,
+        defaultPlantId: effectiveDefault,
         signatureDataUrl: editSignatureDataUrl,
       });
-      await syncAuthorizedUserToFirestore(
-        {
-          id: res.user.id,
-          username: res.user.username,
-          fullName: res.user.fullName,
-          email: res.user.email,
-          roleName: res.user.roleName,
-          isActive: res.user.isActive,
-        },
-        currentUser.email || currentUser.username
-      ).catch(() => {});
+      if (!isStaticFirebaseOnlyMode()) {
+        await syncAuthorizedUserToFirestore(
+          {
+            id: res.user.id,
+            username: res.user.username,
+            fullName: res.user.fullName,
+            email: res.user.email,
+            roleName: res.user.roleName,
+            isActive: res.user.isActive,
+            permissions: res.user.permissions,
+            allowedPlants: res.user.allowedPlants,
+            defaultPlantId: res.user.defaultPlantId,
+            signatureDataUrl: res.user.signatureDataUrl,
+          },
+          currentUser.email || currentUser.username,
+          editingUser.email
+        ).catch(() => {});
+      }
       setEditingUser(null);
       showToast('success', `Updated "@${res.user.username}" successfully.`);
       await loadAll();
@@ -361,7 +447,25 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
     if (!permTargetUser) return;
     setSavingPerms(true);
     try {
-      await ApiClient.updateUserPermissions(permTargetUser.id, permSelection);
+      const res = await ApiClient.updateUserPermissions(permTargetUser.id, permSelection);
+      if (!isStaticFirebaseOnlyMode() && res?.user) {
+        await syncAuthorizedUserToFirestore(
+          {
+            id: res.user.id,
+            username: res.user.username,
+            fullName: res.user.fullName,
+            email: res.user.email,
+            roleName: res.user.roleName,
+            isActive: res.user.isActive,
+            permissions: res.user.permissions,
+            allowedPlants: res.user.allowedPlants,
+            defaultPlantId: res.user.defaultPlantId,
+            signatureDataUrl: res.user.signatureDataUrl,
+          },
+          currentUser.email || currentUser.username,
+          res.user.email
+        ).catch(() => {});
+      }
       setPermTargetUser(null);
       showToast('success', `Section permissions updated for "@${permTargetUser.username}".`);
       await loadAll();
@@ -403,7 +507,9 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
   const handleDeleteUser = async (u: AuthUser) => {
     try {
       await ApiClient.deleteUser(u.id);
-      await deleteAuthorizedUserFromFirestore(u.id).catch(() => {});
+      if (!isStaticFirebaseOnlyMode()) {
+        await deleteAuthorizedUserFromFirestore(u.id, u.email).catch(() => {});
+      }
       setConfirmDeleteUser(null);
       showToast('success', `Deleted user "@${u.username}".`);
       await loadAll();
@@ -643,6 +749,92 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
                     </div>
                   </div>
 
+                  {/* Plant Access Authorization */}
+                  <div className="bg-white border border-[#DCE5EE] rounded-xl p-3 space-y-2.5">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-xs font-extrabold text-[#1C2833] flex items-center gap-1.5">
+                        <MapPin className="w-3.5 h-3.5 text-[#0A6ED1]" />
+                        <span>Authorized Plants (Riyadh, Jeddah &amp; Multi-Plant Access)</span>
+                      </span>
+                      {newRoleName === 'admin' && (
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">
+                          Administrators automatically access All Plants
+                        </span>
+                      )}
+                    </div>
+                    {newRoleName !== 'admin' && (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-start">
+                        <div className="flex flex-wrap gap-2">
+                          <label
+                            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-bold cursor-pointer ${
+                              newAllowedPlants.includes('ALL')
+                                ? 'bg-indigo-50 text-indigo-800 border-indigo-300'
+                                : 'bg-slate-50 text-[#354A5F] border-slate-200'
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={newAllowedPlants.includes('ALL')}
+                              onChange={() => {
+                                const next = togglePlantInList(newAllowedPlants, 'ALL');
+                                setNewAllowedPlants(next);
+                                setNewDefaultPlantId(resolveDefaultPlantForList(next, newDefaultPlantId));
+                              }}
+                              className="rounded text-[#0A6ED1]"
+                            />
+                            <span>All Plants</span>
+                          </label>
+                          {plantOptions.map((pl) => {
+                            const checked = !newAllowedPlants.includes('ALL') && newAllowedPlants.includes(pl.id);
+                            return (
+                              <label
+                                key={pl.id}
+                                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-bold cursor-pointer ${
+                                  checked
+                                    ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                                    : 'bg-slate-50 text-[#354A5F] border-slate-200'
+                                }`}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() => {
+                                    const next = togglePlantInList(newAllowedPlants, pl.id);
+                                    setNewAllowedPlants(next);
+                                    setNewDefaultPlantId(resolveDefaultPlantForList(next, newDefaultPlantId));
+                                  }}
+                                  className="rounded text-[#0A6ED1]"
+                                />
+                                <span>
+                                  {pl.name} ({pl.id})
+                                </span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-bold text-[#354A5F] mb-1">
+                            Default Plant on Login
+                          </label>
+                          <select
+                            value={newDefaultPlantId}
+                            onChange={(e) => setNewDefaultPlantId(e.target.value)}
+                            className="w-full px-2.5 py-1.5 text-xs font-bold rounded-lg border border-[#C2D0DF] bg-white"
+                          >
+                            {(newAllowedPlants.includes('ALL')
+                              ? plantOptions
+                              : plantOptions.filter((pl) => newAllowedPlants.includes(pl.id))
+                            ).map((pl) => (
+                              <option key={pl.id} value={pl.id}>
+                                {pl.name} ({pl.id})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
                   {/* Signature Upload */}
                   <div className="flex flex-wrap items-center gap-3 bg-white border border-[#DCE5EE] rounded-xl p-2.5">
                     <PenTool className="w-4 h-4 text-[#0A6ED1]" />
@@ -787,9 +979,26 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
                         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-[#5B738B]">
                           {u.email && (
                             <span>
-                              Firebase Email: <strong className="font-mono text-[#354A5F]">{u.email}</strong>
+                              Login Email: <strong className="font-mono text-[#354A5F]">{u.email}</strong>
                             </span>
                           )}
+                          <span className="inline-flex items-center gap-1">
+                            <MapPin className="w-3 h-3 text-[#0A6ED1]" />
+                            Plants:{' '}
+                            <strong className="text-[#1C2833]">
+                              {u.roleName === 'admin' || u.allowedPlants?.includes('ALL')
+                                ? 'All Plants'
+                                : (u.allowedPlants && u.allowedPlants.length > 0
+                                    ? u.allowedPlants
+                                    : ['RIYADH']
+                                  )
+                                    .map(
+                                      (pid) =>
+                                        plantOptions.find((pl) => pl.id === pid)?.name || pid
+                                    )
+                                    .join(', ')}
+                            </strong>
+                          </span>
                           <span>
                             Last login: {u.lastLoginAt ? new Date(u.lastLoginAt).toLocaleString() : 'Never'}
                           </span>
@@ -942,7 +1151,9 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
                   {sessions.length === 0 && (
                     <tr>
                       <td colSpan={5} className="px-3 py-8 text-center text-[#5B738B]">
-                        No active sessions found.
+                        {staticMode
+                          ? 'In Cloud / Static Firebase mode, session tokens are managed securely by Firebase Authentication.'
+                          : 'No active sessions found.'}
                       </td>
                     </tr>
                   )}
@@ -1001,6 +1212,77 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
                 ))}
               </select>
             </div>
+            {editRoleName !== 'admin' && (
+              <div className="bg-slate-50 border border-[#DCE5EE] rounded-xl p-2.5 space-y-2">
+                <span className="text-xs font-bold text-[#354A5F] flex items-center gap-1.5">
+                  <MapPin className="w-3.5 h-3.5 text-[#0A6ED1]" />
+                  <span>Authorized Plants *</span>
+                </span>
+                <div className="flex flex-wrap gap-1.5">
+                  <label
+                    className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border text-[11px] font-bold cursor-pointer ${
+                      editAllowedPlants.includes('ALL')
+                        ? 'bg-indigo-50 text-indigo-800 border-indigo-300'
+                        : 'bg-white text-[#354A5F] border-slate-200'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={editAllowedPlants.includes('ALL')}
+                      onChange={() => {
+                        const next = togglePlantInList(editAllowedPlants, 'ALL');
+                        setEditAllowedPlants(next);
+                        setEditDefaultPlantId(resolveDefaultPlantForList(next, editDefaultPlantId));
+                      }}
+                      className="rounded text-[#0A6ED1]"
+                    />
+                    <span>All Plants</span>
+                  </label>
+                  {plantOptions.map((pl) => {
+                    const checked = !editAllowedPlants.includes('ALL') && editAllowedPlants.includes(pl.id);
+                    return (
+                      <label
+                        key={pl.id}
+                        className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border text-[11px] font-bold cursor-pointer ${
+                          checked
+                            ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                            : 'bg-white text-[#354A5F] border-slate-200'
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => {
+                            const next = togglePlantInList(editAllowedPlants, pl.id);
+                            setEditAllowedPlants(next);
+                            setEditDefaultPlantId(resolveDefaultPlantForList(next, editDefaultPlantId));
+                          }}
+                          className="rounded text-[#0A6ED1]"
+                        />
+                        <span>{pl.name}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-[#354A5F] mb-1">Default Plant</label>
+                  <select
+                    value={editDefaultPlantId}
+                    onChange={(e) => setEditDefaultPlantId(e.target.value)}
+                    className="w-full px-2.5 py-1 text-xs font-bold rounded-lg border border-[#C2D0DF] bg-white"
+                  >
+                    {(editAllowedPlants.includes('ALL')
+                      ? plantOptions
+                      : plantOptions.filter((pl) => editAllowedPlants.includes(pl.id))
+                    ).map((pl) => (
+                      <option key={pl.id} value={pl.id}>
+                        {pl.name} ({pl.id})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            )}
             <label className="flex items-center gap-2 text-xs font-bold text-[#354A5F] cursor-pointer">
               <input
                 type="checkbox"

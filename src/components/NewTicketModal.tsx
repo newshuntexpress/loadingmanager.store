@@ -11,7 +11,7 @@ import {
   WhatsAppDispatchOutcome,
 } from '../types';
 import { PACK_DROPDOWN_OPTIONS } from './LoadingSlipModal';
-import { StorageService, getCurrentTimeString, createEmpty8Rows } from '../services/storage';
+import { StorageService, getCurrentTimeString, createEmpty8Rows, resolveSettingsForPlant } from '../services/storage';
 import { ApiClient } from '../services/api';
 import { formatSaudiPhoneNumber } from '../utils/whatsapp';
 import { inferLoadingTypeFromDestination } from '../utils/loadingType';
@@ -46,6 +46,7 @@ import {
 
 interface NewTicketModalProps {
   date: string;
+  plantId?: string;
   settings: CompanySettings;
   materials?: MaterialMasterRecord[];
   currentUserId?: string;
@@ -105,6 +106,7 @@ function renderHighlightedName(name: string, query: string): React.ReactNode {
 
 export const NewTicketModal: React.FC<NewTicketModalProps> = ({
   date,
+  plantId = 'RIYADH',
   settings,
   materials: materialsProp,
   currentUserId,
@@ -113,12 +115,16 @@ export const NewTicketModal: React.FC<NewTicketModalProps> = ({
   onSave,
   onClose,
 }) => {
+  const plantSettings = useMemo(
+    () => resolveSettingsForPlant(settings, plantId),
+    [settings, plantId]
+  );
   const [driverMasterList] = useState<DriverMasterRecord[]>(() => StorageService.getDrivers());
 
-  // Automatic sequence number and ticket number for selected date
-  const [nextSeq, setNextSeq] = useState<number>(() => StorageService.getNextDailySequence(date));
+  // Automatic sequence number and ticket number for selected date & plant
+  const [nextSeq, setNextSeq] = useState<number>(() => StorageService.getNextDailySequence(date, plantId));
   const [ticketNumber, setTicketNumber] = useState<string>(() =>
-    StorageService.generateTicketNumber(date, StorageService.getNextDailySequence(date))
+    StorageService.generateTicketNumber(date, StorageService.getNextDailySequence(date, plantId), plantId)
   );
 
   // Mandatory Delivery Note Number (Del Note No.)
@@ -136,10 +142,10 @@ export const NewTicketModal: React.FC<NewTicketModalProps> = ({
   const [destinationPlace, setDestinationPlace] = useState('');
   const [loadingType, setLoadingType] = useState<TruckLoadingType>('local');
   const [loadingTypeManual, setLoadingTypeManual] = useState(false);
-  const [selectedGate, setSelectedGate] = useState<string>(settings.gates[0] || 'Gate 1');
+  const [selectedGate, setSelectedGate] = useState<string>(plantSettings.gates[0] || 'Gate 1');
   const [remarks, setRemarks] = useState('');
   const [priority, setPriority] = useState<'normal' | 'urgent'>('normal');
-  const [autoPrintToken, setAutoPrintToken] = useState<boolean>(settings.autoPrintTokenAfterSave ?? true);
+  const [autoPrintToken, setAutoPrintToken] = useState<boolean>(plantSettings.autoPrintTokenAfterSave ?? true);
 
   // Inline Loading Slip builder state
   const [includeLoadingSlip, setIncludeLoadingSlip] = useState<boolean>(false);
@@ -206,14 +212,14 @@ export const NewTicketModal: React.FC<NewTicketModalProps> = ({
   const gateQueueInfo = StorageService.getGateQueueInfo(selectedGate, date);
 
   useEffect(() => {
-    const seq = StorageService.getNextDailySequence(date);
+    const seq = StorageService.getNextDailySequence(date, plantId);
     setNextSeq(seq);
-    setTicketNumber(StorageService.generateTicketNumber(date, seq));
-  }, [date]);
+    setTicketNumber(StorageService.generateTicketNumber(date, seq, plantId));
+  }, [date, plantId]);
 
   const displayStoreInchargeName = (storeInchargeFullName || '').trim();
   const displaySignatureDataUrl =
-    storeInchargeSignatureDataUrl || settings.storeInchargeSignatureDataUrl || '';
+    storeInchargeSignatureDataUrl || plantSettings.storeInchargeSignatureDataUrl || '';
 
   const totalQty = items.reduce((acc, row) => acc + extractNumeric(row.qty), 0);
   const totalPallets = items.reduce((acc, row) => acc + extractNumeric(row.pallets), 0);
@@ -623,6 +629,7 @@ export const NewTicketModal: React.FC<NewTicketModalProps> = ({
       let baseTicket = createdTicketDraftRef.current;
       if (!baseTicket) {
         baseTicket = await ApiClient.createTicket({
+          plantId,
           ticketNumber: ticketNumber.toUpperCase(),
           sequenceNumber: nextSeq,
           date,
@@ -744,7 +751,7 @@ export const NewTicketModal: React.FC<NewTicketModalProps> = ({
                   : 'Generate New Gate Ticket'}
               </h2>
               <p className="text-xs text-blue-100">
-                Automatic Ticket &amp; Sequence Generation | Gate Position Calculator &amp; Loading Slip
+                {plantSettings.companyName} | Auto Ticket &amp; Sequence | Gate Position &amp; Loading Slip
               </p>
             </div>
           </div>
@@ -1118,7 +1125,7 @@ export const NewTicketModal: React.FC<NewTicketModalProps> = ({
               Assign Loading Gate:
             </label>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-              {settings.gates.map((gate) => {
+              {plantSettings.gates.map((gate) => {
                 const info = StorageService.getGateQueueInfo(gate, date);
                 const isSelected = selectedGate === gate;
                 return (
@@ -1650,7 +1657,7 @@ export const NewTicketModal: React.FC<NewTicketModalProps> = ({
                   ) : (
                     <ClipboardList className="w-4 h-4 shrink-0" />
                   )}
-                  <span>{submitting && pendingAction === 'open_slip' ? 'Saving...' : 'Save & Loading Slip'}</span>
+                  <span>{submitting && pendingAction === 'open_slip' ? 'Saving...' : 'Create Loading Slip'}</span>
                 </button>
               ) : (
                 <button

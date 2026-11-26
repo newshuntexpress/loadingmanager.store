@@ -124,8 +124,92 @@ export interface FirestoreUserProfile {
   displayName: string;
   roleName: string;
   isActive: boolean;
+  allowedPlants?: string[];
+  defaultPlantId?: string;
   createdAt?: unknown;
   updatedAt?: unknown;
+}
+
+export interface AuthorizedUserFirestoreRecord {
+  id: string;
+  username: string;
+  displayName: string;
+  email?: string;
+  roleName: string;
+  isActive: boolean;
+  permissions?: string[];
+  allowedPlants?: string[];
+  defaultPlantId?: string;
+  signatureDataUrl?: string;
+  authorizedBy: string;
+  ownerUid?: string;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export interface AuthorizedEmailFirestoreRecord {
+  emailKey: string;
+  userId: string;
+  username: string;
+  displayName: string;
+  email: string;
+  roleName: string;
+  isActive: boolean;
+  permissions: string[];
+  allowedPlants: string[];
+  defaultPlantId: string;
+  signatureDataUrl?: string;
+  authorizedBy: string;
+  ownerUid: string;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export type FirebaseAuthorizationResult =
+  | {
+      authorized: true;
+      record: AuthorizedEmailFirestoreRecord;
+    }
+  | {
+      authorized: false;
+      reason: 'unverified' | 'not_listed' | 'disabled' | 'error';
+      email: string;
+      message: string;
+    };
+
+export function emailToAllowlistKey(email: string): string {
+  return String(email || '')
+    .trim()
+    .toLowerCase()
+    .replace(/@/g, '_at_')
+    .replace(/\./g, '_dot_')
+    .replace(/[^a-z0-9_-]/g, '_')
+    .slice(0, 128);
+}
+
+function normalizePlantList(raw: unknown, roleName: string): string[] {
+  if (roleName === 'admin') return ['ALL'];
+  if (!Array.isArray(raw)) return ['RIYADH'];
+  const cleaned = Array.from(
+    new Set(
+      raw
+        .map((p) => String(p || '').trim().toUpperCase().replace(/[^A-Z0-9_-]/g, ''))
+        .filter(Boolean)
+    )
+  ).slice(0, 20);
+  if (cleaned.includes('ALL')) return ['ALL'];
+  return cleaned.length > 0 ? cleaned : ['RIYADH'];
+}
+
+function normalizeDefaultPlant(raw: unknown, allowedPlants: string[]): string {
+  const clean = String(raw || '')
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9_-]/g, '')
+    .slice(0, 32);
+  if (allowedPlants.includes('ALL')) return clean || 'RIYADH';
+  if (clean && allowedPlants.includes(clean)) return clean;
+  return allowedPlants[0] || 'RIYADH';
 }
 
 const VALID_ROLES = new Set([
@@ -204,6 +288,7 @@ export async function syncFirebaseUserProfileToFirestore(
     120
   );
   const email = clampStr(firebaseUser.email.toLowerCase(), 254);
+  const emailKey = emailToAllowlistKey(email);
   const photoURL = clampStr(firebaseUser.photoURL || '', 512);
   const providerId = clampStr(
     firebaseUser.providerData?.[0]?.providerId || 'google.com',
@@ -216,7 +301,7 @@ export async function syncFirebaseUserProfileToFirestore(
   const privateDocRef = doc(db, 'users', uid, 'private', 'info');
   const adminDocRef = doc(db, 'admins', uid);
 
-  let isFirestoreAdmin = isDefaultAdmin;
+  let isFirestoreAdmin = isDefaultAdmin || safeRole === 'admin';
   if (isDefaultAdmin) {
     try {
       const adminSnap = await getDoc(adminDocRef);
@@ -227,15 +312,38 @@ export async function syncFirebaseUserProfileToFirestore(
           createdAt: serverTimestamp(),
         });
       }
+      // Ensure default admin has an active allowlist doc
+      if (emailKey) {
+        const emailDocRef = doc(db, 'authorized_emails', emailKey);
+        const emailSnap = await getDoc(emailDocRef);
+        if (!emailSnap.exists()) {
+          await setDoc(emailDocRef, {
+            emailKey,
+            userId: uid,
+            username: 'newshuntexpress',
+            displayName,
+            email,
+            roleName: 'admin',
+            isActive: true,
+            permissions: ALL_PLANT_PERMISSIONS,
+            allowedPlants: ['ALL'],
+            defaultPlantId: 'RIYADH',
+            authorizedBy: email,
+            ownerUid: uid,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        }
+      }
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, `admins/${uid}`);
     }
   } else {
     try {
       const adminSnap = await getDoc(adminDocRef);
-      isFirestoreAdmin = adminSnap.exists();
+      isFirestoreAdmin = adminSnap.exists() || safeRole === 'admin';
     } catch {
-      isFirestoreAdmin = false;
+      isFirestoreAdmin = safeRole === 'admin';
     }
   }
 
@@ -247,9 +355,16 @@ export async function syncFirebaseUserProfileToFirestore(
   }
 
   if (!userSnap.exists()) {
-    // Firestore rules restrict user creation strictly to Admins
-    if (!isFirestoreAdmin) {
-      return;
+    // Only Admins or allowlisted active users may create their own profile doc
+    if (!isFirestoreAdmin && safeRole !== 'admin') {
+      try {
+        const allowSnap = emailKey ? await getDoc(doc(db, 'authorized_emails', emailKey)) : null;
+        if (!allowSnap || !allowSnap.exists() || allowSnap.data()?.isActive !== true) {
+          return;
+        }
+      } catch {
+        return;
+      }
     }
     const initialRole = isDefaultAdmin ? 'admin' : safeRole;
     try {
@@ -307,6 +422,119 @@ export async function syncFirebaseUserProfileToFirestore(
   }
 }
 
+export async function verifyFirebaseUserAuthorized(
+  fbUser: User | null | undefined
+): Promise<FirebaseAuthorizationResult> {
+  if (!fbUser || !fbUser.email || !fbUser.emailVerified) {
+    return {
+      authorized: false,
+      reason: 'unverified',
+      email: fbUser?.email || '',
+      message: 'A verified Google email address is required to sign in.',
+    };
+  }
+
+  const email = fbUser.email.trim().toLowerCase();
+  const emailKey = emailToAllowlistKey(email);
+
+  if (email === DEFAULT_ADMIN_EMAIL) {
+    await syncFirebaseUserProfileToFirestore(fbUser, 'admin').catch(() => {});
+    return {
+      authorized: true,
+      record: {
+        emailKey,
+        userId: fbUser.uid,
+        username: 'newshuntexpress',
+        displayName: clampStr(fbUser.displayName || 'Default Administrator', 120),
+        email,
+        roleName: 'admin',
+        isActive: true,
+        permissions: [...ALL_PLANT_PERMISSIONS],
+        allowedPlants: ['ALL'],
+        defaultPlantId: 'RIYADH',
+        authorizedBy: email,
+        ownerUid: fbUser.uid,
+      },
+    };
+  }
+
+  if (!emailKey || !/^[a-zA-Z0-9_-]+$/.test(emailKey)) {
+    return {
+      authorized: false,
+      reason: 'not_listed',
+      email,
+      message: `Access denied: Your Google account (${email}) is not authorized. Please ask the Administrator (${DEFAULT_ADMIN_EMAIL}) to create and activate your email first.`,
+    };
+  }
+
+  try {
+    const emailRef = doc(db, 'authorized_emails', emailKey);
+    let snap;
+    try {
+      snap = await getDocFromServer(emailRef);
+    } catch {
+      snap = await getDoc(emailRef);
+    }
+
+    if (!snap.exists()) {
+      return {
+        authorized: false,
+        reason: 'not_listed',
+        email,
+        message: `Access denied: Your Google account (${email}) is not authorized by the Administrator. Only Admin-created active users may sign in.`,
+      };
+    }
+
+    const data = snap.data() as Partial<AuthorizedEmailFirestoreRecord>;
+    if (data.isActive !== true) {
+      return {
+        authorized: false,
+        reason: 'disabled',
+        email,
+        message: `Access denied: Your account (${email}) has been deactivated by the Administrator.`,
+      };
+    }
+
+    const roleName = typeof data.roleName === 'string' && VALID_ROLES.has(data.roleName) ? data.roleName : 'user';
+    const allowedPlants = normalizePlantList(data.allowedPlants, roleName);
+    const defaultPlantId = normalizeDefaultPlant(data.defaultPlantId, allowedPlants);
+    const permissions = Array.isArray(data.permissions) && data.permissions.length > 0
+      ? data.permissions.map(String).slice(0, 50)
+      : roleName === 'admin'
+      ? [...ALL_PLANT_PERMISSIONS]
+      : [...getDefaultPermissionsForRole(roleName)];
+
+    return {
+      authorized: true,
+      record: {
+        emailKey,
+        userId: clampStr(String(data.userId || fbUser.uid), 128),
+        username: clampStr(String(data.username || email.split('@')[0] || 'user'), 32),
+        displayName: clampStr(String(data.displayName || fbUser.displayName || email.split('@')[0]), 120),
+        email,
+        roleName,
+        isActive: true,
+        permissions,
+        allowedPlants,
+        defaultPlantId,
+        signatureDataUrl: typeof data.signatureDataUrl === 'string' ? data.signatureDataUrl : undefined,
+        authorizedBy: clampStr(String(data.authorizedBy || DEFAULT_ADMIN_EMAIL), 120),
+        ownerUid: clampStr(String(data.ownerUid || fbUser.uid), 128),
+      },
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return {
+      authorized: false,
+      reason: 'error',
+      email,
+      message: msg.toLowerCase().includes('permission')
+        ? `Access denied: Your Google account (${email}) is not in the Administrator allowlist.`
+        : `Unable to verify account authorization (${msg}).`,
+    };
+  }
+}
+
 export async function syncAuthorizedUserToFirestore(
   userRecord: {
     id: string;
@@ -315,8 +543,13 @@ export async function syncAuthorizedUserToFirestore(
     email?: string | null;
     roleName: string;
     isActive: boolean;
+    permissions?: string[];
+    allowedPlants?: string[];
+    defaultPlantId?: string;
+    signatureDataUrl?: string;
   },
-  actorLabel: string
+  actorLabel: string,
+  previousEmail?: string | null
 ): Promise<void> {
   if (!auth.currentUser || !auth.currentUser.emailVerified) {
     return;
@@ -325,45 +558,112 @@ export async function syncAuthorizedUserToFirestore(
   const username = clampStr(userRecord.username, 32);
   const displayName = clampStr(userRecord.fullName || username, 120);
   const email = clampStr((userRecord.email || '').toLowerCase(), 254);
+  const prevEmailClean = clampStr((previousEmail || '').toLowerCase(), 254);
   const safeRole = VALID_ROLES.has(userRecord.roleName) ? userRecord.roleName : 'user';
   const authorizedBy = clampStr(actorLabel || auth.currentUser.email || 'admin', 120);
+  const ownerUid = clampStr(auth.currentUser.uid, 128);
+  const allowedPlants = normalizePlantList(userRecord.allowedPlants, safeRole);
+  const defaultPlantId = normalizeDefaultPlant(userRecord.defaultPlantId, allowedPlants);
+  const permissions = (
+    Array.isArray(userRecord.permissions) && userRecord.permissions.length > 0
+      ? userRecord.permissions
+      : safeRole === 'admin'
+      ? ALL_PLANT_PERMISSIONS
+      : getDefaultPermissionsForRole(safeRole)
+  )
+    .map((p) => clampStr(String(p), 64))
+    .filter(Boolean)
+    .slice(0, 50);
+  const signatureDataUrl =
+    typeof userRecord.signatureDataUrl === 'string' &&
+    userRecord.signatureDataUrl.length > 0 &&
+    userRecord.signatureDataUrl.length <= 300_000
+      ? userRecord.signatureDataUrl
+      : '';
 
-  if (!/^[a-zA-Z0-9_-]+$/.test(id) || !/^[a-zA-Z0-9._-]+$/.test(username) || username.length < 3 || displayName.length < 2) {
+  if (
+    !/^[a-zA-Z0-9_-]+$/.test(id) ||
+    !/^[a-zA-Z0-9._-]+$/.test(username) ||
+    username.length < 3 ||
+    displayName.length < 2
+  ) {
     return;
   }
 
   const ref = doc(db, 'authorized_users', id);
   try {
     const snap = await getDoc(ref);
+    const payload: Record<string, unknown> = {
+      id,
+      username,
+      displayName,
+      ...(email ? { email } : {}),
+      roleName: safeRole,
+      isActive: Boolean(userRecord.isActive),
+      permissions,
+      allowedPlants,
+      defaultPlantId,
+      ...(signatureDataUrl ? { signatureDataUrl } : {}),
+      authorizedBy,
+      ownerUid,
+      updatedAt: serverTimestamp(),
+    };
     if (!snap.exists()) {
       await setDoc(ref, {
-        id,
-        username,
-        displayName,
-        ...(email ? { email } : {}),
-        roleName: safeRole,
-        isActive: Boolean(userRecord.isActive),
-        authorizedBy,
+        ...payload,
         createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
       });
     } else {
-      await updateDoc(ref, {
-        username,
-        displayName,
-        ...(email ? { email } : {}),
-        roleName: safeRole,
-        isActive: Boolean(userRecord.isActive),
-        authorizedBy,
-        updatedAt: serverTimestamp(),
-      });
+      await setDoc(
+        ref,
+        {
+          ...payload,
+          createdAt: snap.data()?.createdAt || serverTimestamp(),
+        }
+      );
+    }
+
+    // Keep email-keyed allowlist strictly synchronized for login checks & Firestore rules
+    if (prevEmailClean && prevEmailClean !== email) {
+      const prevKey = emailToAllowlistKey(prevEmailClean);
+      if (prevKey) {
+        await deleteDoc(doc(db, 'authorized_emails', prevKey)).catch(() => {});
+      }
+    }
+
+    if (email) {
+      const emailKey = emailToAllowlistKey(email);
+      if (emailKey && /^[a-zA-Z0-9_-]+$/.test(emailKey)) {
+        const emailRef = doc(db, 'authorized_emails', emailKey);
+        const emailSnap = await getDoc(emailRef);
+        await setDoc(emailRef, {
+          emailKey,
+          userId: id,
+          username,
+          displayName,
+          email,
+          roleName: safeRole,
+          isActive: Boolean(userRecord.isActive),
+          permissions,
+          allowedPlants,
+          defaultPlantId,
+          ...(signatureDataUrl ? { signatureDataUrl } : {}),
+          authorizedBy,
+          ownerUid,
+          createdAt: emailSnap.exists() ? emailSnap.data()?.createdAt || serverTimestamp() : serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      }
     }
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `authorized_users/${id}`);
   }
 }
 
-export async function deleteAuthorizedUserFromFirestore(userId: string): Promise<void> {
+export async function deleteAuthorizedUserFromFirestore(
+  userId: string,
+  email?: string | null
+): Promise<void> {
   if (!auth.currentUser || !auth.currentUser.emailVerified) {
     return;
   }
@@ -371,6 +671,13 @@ export async function deleteAuthorizedUserFromFirestore(userId: string): Promise
   if (!/^[a-zA-Z0-9_-]+$/.test(id)) return;
   try {
     await deleteDoc(doc(db, 'authorized_users', id));
+    const cleanEmail = clampStr((email || '').toLowerCase(), 254);
+    if (cleanEmail) {
+      const emailKey = emailToAllowlistKey(cleanEmail);
+      if (emailKey && /^[a-zA-Z0-9_-]+$/.test(emailKey)) {
+        await deleteDoc(doc(db, 'authorized_emails', emailKey)).catch(() => {});
+      }
+    }
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, `authorized_users/${id}`);
   }
@@ -582,67 +889,130 @@ export function isStaticNoBackendError(err: unknown): boolean {
   return false;
 }
 
-const ALL_PLANT_PERMISSIONS = [
+export const ALL_PLANT_PERMISSIONS = [
   'tickets.view',
   'tickets.create',
   'tickets.update',
   'tickets.delete',
+  'forklift.operate',
+  'guard.view',
+  'slips.print',
   'drivers.manage',
   'materials.view',
   'materials.manage',
+  'reports.view',
   'dispatch.view',
   'material_register.view',
-  'guard.view',
-  'forklift.operate',
-  'liquid_store.access',
+  'liquid.view',
+  'liquid.store',
+  'liquid.materials',
   'ex_factory.view',
   'ex_factory.create',
   'ex_factory.update',
   'ex_factory.delete',
-  'reports.export',
   'settings.manage',
-  'whatsapp.view',
   'users.manage',
+  'audit.view',
 ];
 
 const STANDARD_USER_PERMISSIONS = [
   'tickets.view',
   'tickets.create',
   'tickets.update',
+  'forklift.operate',
+  'guard.view',
+  'slips.print',
   'drivers.manage',
   'materials.view',
   'materials.manage',
+  'reports.view',
   'dispatch.view',
   'material_register.view',
-  'guard.view',
-  'reports.export',
+  'liquid.view',
+  'liquid.store',
+  'liquid.materials',
+  'ex_factory.view',
+  'ex_factory.create',
+  'ex_factory.update',
 ];
+
+export const ROLE_DISPLAY_NAME_MAP: Record<string, string> = {
+  admin: 'Administrator',
+  user: 'User / Operator',
+  mmd_manager: 'MMD Manager',
+  view_only: 'View Only',
+  forklift_operator: 'Forklift Operator',
+  liquid_store_operator: 'Liquid Store Operator',
+  ex_factory_operator: 'Ex-Factory Operator',
+  security_guard: 'Security Guard',
+};
+
+export function getDefaultPermissionsForRole(roleName: string): string[] {
+  switch (roleName) {
+    case 'admin':
+      return ALL_PLANT_PERMISSIONS;
+    case 'forklift_operator':
+      return ['tickets.view', 'forklift.operate'];
+    case 'liquid_store_operator':
+      return ['liquid.view', 'liquid.store', 'liquid.materials'];
+    case 'ex_factory_operator':
+      return ['ex_factory.view', 'ex_factory.create', 'ex_factory.update'];
+    case 'security_guard':
+      return ['guard.view'];
+    case 'view_only':
+      return [
+        'tickets.view',
+        'guard.view',
+        'materials.view',
+        'dispatch.view',
+        'material_register.view',
+        'reports.view',
+        'liquid.view',
+        'ex_factory.view',
+      ];
+    case 'mmd_manager':
+    case 'user':
+    default:
+      return STANDARD_USER_PERMISSIONS;
+  }
+}
 
 export function buildAuthUserFromFirebase(
   fbUser: User,
-  profile?: FirestoreUserProfile | null
+  authorizedOrProfile?: Partial<AuthorizedEmailFirestoreRecord & FirestoreUserProfile> | null
 ): AuthUser {
   const email = (fbUser.email || '').toLowerCase();
   const isDefaultAdmin = email === DEFAULT_ADMIN_EMAIL;
-  const resolvedRole = isDefaultAdmin ? 'admin' : profile?.roleName || 'user';
+  const resolvedRole = isDefaultAdmin ? 'admin' : authorizedOrProfile?.roleName || 'user';
   const isAdminRole = resolvedRole === 'admin';
   const now = Date.now();
   const usernameBase = email ? email.split('@')[0] : fbUser.uid.slice(0, 12);
+  const allowedPlants = normalizePlantList(authorizedOrProfile?.allowedPlants, resolvedRole);
+  const defaultPlantId = normalizeDefaultPlant(authorizedOrProfile?.defaultPlantId, allowedPlants);
+  const resolvedPermissions = isAdminRole
+    ? [...ALL_PLANT_PERMISSIONS]
+    : Array.isArray(authorizedOrProfile?.permissions) && authorizedOrProfile.permissions.length > 0
+    ? authorizedOrProfile.permissions
+    : [...getDefaultPermissionsForRole(resolvedRole)];
 
   return {
-    id: fbUser.uid,
-    username: usernameBase,
-    fullName: fbUser.displayName || profile?.displayName || usernameBase || 'Firebase User',
+    id: authorizedOrProfile?.userId || fbUser.uid,
+    username: authorizedOrProfile?.username || usernameBase,
+    fullName:
+      authorizedOrProfile?.displayName || fbUser.displayName || usernameBase || 'Authorized User',
     email,
     roleId: isAdminRole ? 'role_admin' : `role_${resolvedRole}`,
     roleName: resolvedRole,
-    roleDisplayName: isAdminRole ? 'Administrator' : 'Plant Operator',
-    isActive: profile?.isActive !== false,
+    roleDisplayName: ROLE_DISPLAY_NAME_MAP[resolvedRole] || 'User / Operator',
+    isActive: isDefaultAdmin ? true : authorizedOrProfile?.isActive === true,
     mustChangePassword: false,
     lastLoginAt: now,
-    createdBy: null,
+    signatureDataUrl: authorizedOrProfile?.signatureDataUrl || '',
+    createdBy: authorizedOrProfile?.authorizedBy || null,
     createdAt: now,
     updatedAt: now,
-    permissions: isAdminRole ? ALL_PLANT_PERMISSIONS : STANDARD_USER_PERMISSIONS,
+    permissions: resolvedPermissions,
+    allowedPlants,
+    defaultPlantId,
   };
 }

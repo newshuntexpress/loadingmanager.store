@@ -16,16 +16,23 @@ import {
 import {
   auth,
   db,
+  getDefaultPermissionsForRole,
   handleFirestoreError,
   OperationType,
+  ROLE_DISPLAY_NAME_MAP,
+  ALL_PLANT_PERMISSIONS,
 } from '../firebase';
 import type {
+  AuditLogEntry,
+  AuthUser,
+  CompanySettings,
   LoadingSlipData,
   LoadingSlipItem,
   MaterialMasterRecord,
   TicketRecord,
   TruckStatus,
 } from '../types';
+import { mergeSettingsWithDefaults } from './storage';
 
 const activeWriteLocks = new Map<string, Promise<void>>();
 
@@ -151,6 +158,7 @@ function sanitizeLoadingSlip(slip: LoadingSlipData): Record<string, unknown> {
 
 function buildTicketMutableFields(ticket: TicketRecord, actorLabel: string): Record<string, unknown> {
   const fields: Record<string, unknown> = {
+    plantId: clampStr(ticket.plantId || 'RIYADH', 32, 'RIYADH').toUpperCase(),
     gateNumber: clampStr(ticket.gateNumber, 40, 'Gate 1'),
     gateSequenceNumber: Math.max(0, Math.round(Number(ticket.gateSequenceNumber) || 0)),
     truckNumber: clampStr(ticket.truckNumber, 40, 'UNKNOWN'),
@@ -316,7 +324,8 @@ export async function deleteGateTicketFromFirestore(ticketId: string): Promise<v
 export function subscribeFirestoreTickets(
   onData: (tickets: TicketRecord[]) => void,
   onError?: (err: Error) => void,
-  fallbackDriverPiiById?: Map<string, { driverPhone?: string; iqamaNumber?: string }>
+  fallbackDriverPiiById?: Map<string, { driverPhone?: string; iqamaNumber?: string }>,
+  allowedPlants?: string[]
 ): Unsubscribe {
   const q = query(collection(db, 'gate_tickets'), where('isSharedPlant', '==', true));
   const piiCache = new Map<string, { driverPhone: string; iqamaNumber: string; updatedAtMs: number }>();
@@ -324,14 +333,19 @@ export function subscribeFirestoreTickets(
   return onSnapshot(
     q,
     async (snapshot) => {
-      const rawRecords = snapshot.docs.map((docSnap) => {
+      let rawRecords = snapshot.docs.map((docSnap) => {
         const d = docSnap.data();
         const createdAt = timestampToMillis(d.createdAt);
         const updatedAt = timestampToMillis(d.updatedAt, createdAt);
         const fallbackPii = fallbackDriverPiiById?.get(docSnap.id);
+        const plantId =
+          typeof d.plantId === 'string' && d.plantId.trim()
+            ? d.plantId.trim().toUpperCase()
+            : 'RIYADH';
 
         const rec: TicketRecord = {
           id: String(d.id || docSnap.id),
+          plantId,
           ticketNumber: String(d.ticketNumber || docSnap.id),
           sequenceNumber: Number(d.sequenceNumber || 0),
           date: String(d.date || normalizeDateStr(undefined)),
@@ -365,6 +379,17 @@ export function subscribeFirestoreTickets(
         };
         return rec;
       });
+
+      if (
+        Array.isArray(allowedPlants) &&
+        allowedPlants.length > 0 &&
+        !allowedPlants.includes('ALL')
+      ) {
+        const allowSet = new Set(allowedPlants.map((p) => p.toUpperCase()));
+        rawRecords = rawRecords.filter((rec) =>
+          allowSet.has((rec.plantId || 'RIYADH').toUpperCase())
+        );
+      }
 
       // Best-effort hydrate driver PII for records where user is owner or admin
       await Promise.all(
@@ -573,3 +598,176 @@ export async function syncMissingRecordsToFirestore(
     // Best-effort initial backfill
   }
 }
+
+export async function listAuthorizedUsersFromFirestore(): Promise<AuthUser[]> {
+  const user = auth.currentUser;
+  if (!user || !user.emailVerified) return [];
+  try {
+    const snap = await getDocs(collection(db, 'authorized_users'));
+    const list: AuthUser[] = snap.docs.map((docSnap) => {
+      const d = docSnap.data();
+      const roleName = typeof d.roleName === 'string' ? d.roleName : 'user';
+      const createdAt = timestampToMillis(d.createdAt);
+      const updatedAt = timestampToMillis(d.updatedAt, createdAt);
+      const allowedPlants =
+        roleName === 'admin'
+          ? ['ALL']
+          : Array.isArray(d.allowedPlants) && d.allowedPlants.length > 0
+          ? d.allowedPlants.map((p: unknown) => String(p).trim().toUpperCase()).filter(Boolean)
+          : ['RIYADH'];
+      const defaultPlantId =
+        typeof d.defaultPlantId === 'string' && d.defaultPlantId.trim()
+          ? d.defaultPlantId.trim().toUpperCase()
+          : allowedPlants.includes('ALL')
+          ? 'RIYADH'
+          : allowedPlants[0] || 'RIYADH';
+      const permissions =
+        roleName === 'admin'
+          ? [...ALL_PLANT_PERMISSIONS]
+          : Array.isArray(d.permissions) && d.permissions.length > 0
+          ? d.permissions.map((p: unknown) => String(p))
+          : [...getDefaultPermissionsForRole(roleName)];
+      return {
+        id: String(d.id || docSnap.id),
+        username: String(d.username || docSnap.id),
+        fullName: String(d.displayName || d.username || 'User'),
+        email: typeof d.email === 'string' ? d.email : '',
+        roleId: `role_${roleName}`,
+        roleName,
+        roleDisplayName: ROLE_DISPLAY_NAME_MAP[roleName] || 'User / Operator',
+        isActive: d.isActive !== false,
+        mustChangePassword: false,
+        lastLoginAt: null,
+        signatureDataUrl: typeof d.signatureDataUrl === 'string' ? d.signatureDataUrl : '',
+        createdBy: typeof d.authorizedBy === 'string' ? d.authorizedBy : null,
+        createdAt,
+        updatedAt,
+        permissions,
+        allowedPlants,
+        defaultPlantId,
+      };
+    });
+    list.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    return list;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, 'authorized_users');
+  }
+}
+
+export async function writeAuditLogToFirestore(entry: {
+  action: string;
+  targetType: string;
+  targetId?: string | null;
+  details?: string;
+}): Promise<void> {
+  const user = auth.currentUser;
+  if (!user || !user.emailVerified) return;
+  const id = `log_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  const actorUsername = clampStr(
+    user.email?.split('@')[0] || user.displayName || 'admin',
+    64,
+    'admin'
+  );
+  try {
+    await setDoc(doc(db, 'audit_logs', id), {
+      id,
+      ownerUid: safeId(user.uid, 'usr'),
+      actorUsername,
+      actorRole: 'admin',
+      action: clampStr(entry.action, 64, 'ADMIN_ACTION'),
+      targetType: clampStr(entry.targetType, 32, 'user'),
+      targetId: clampStr(entry.targetId || '', 128),
+      details: clampStr(entry.details || '', 500),
+      createdAt: serverTimestamp(),
+    });
+  } catch {
+    // Non-blocking audit trail write
+  }
+}
+
+export async function listAuditLogsFromFirestore(params?: {
+  action?: string;
+  search?: string;
+  limit?: number;
+}): Promise<AuditLogEntry[]> {
+  const user = auth.currentUser;
+  if (!user || !user.emailVerified) return [];
+  try {
+    const snap = await getDocs(collection(db, 'audit_logs'));
+    let logs: AuditLogEntry[] = snap.docs.map((docSnap, idx) => {
+      const d = docSnap.data();
+      const createdAt = timestampToMillis(d.createdAt);
+      const numericId =
+        typeof d.numericId === 'number' && Number.isFinite(d.numericId)
+          ? d.numericId
+          : createdAt * 100 + (idx % 100);
+      return {
+        id: numericId,
+        actorUserId: typeof d.ownerUid === 'string' ? d.ownerUid : null,
+        actorUsername: String(d.actorUsername || 'admin'),
+        action: String(d.action || ''),
+        targetType: typeof d.targetType === 'string' ? d.targetType : null,
+        targetId: typeof d.targetId === 'string' ? d.targetId : null,
+        details: typeof d.details === 'string' ? d.details : null,
+        ipAddress: 'firebase-cloud',
+        createdAt,
+      };
+    });
+    if (params?.action) {
+      logs = logs.filter((l) => l.action === params.action);
+    }
+    if (params?.search) {
+      const q = params.search.toLowerCase();
+      logs = logs.filter(
+        (l) =>
+          (l.actorUsername || '').toLowerCase().includes(q) ||
+          l.action.toLowerCase().includes(q) ||
+          (l.details || '').toLowerCase().includes(q)
+      );
+    }
+    logs.sort((a, b) => b.createdAt - a.createdAt);
+    return logs.slice(0, params?.limit || 150);
+  } catch {
+    return [];
+  }
+}
+
+export async function getPlantSettingsFromFirestore(): Promise<CompanySettings | null> {
+  const user = auth.currentUser;
+  if (!user || !user.emailVerified) return null;
+  try {
+    const snap = await getDoc(doc(db, 'plant_settings', 'active'));
+    if (!snap.exists()) return null;
+    const data = snap.data();
+    if (typeof data?.settingsJson === 'string' && data.settingsJson.trim()) {
+      return mergeSettingsWithDefaults(JSON.parse(data.settingsJson) as Partial<CompanySettings>);
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export async function savePlantSettingsToFirestore(settings: CompanySettings): Promise<void> {
+  const user = auth.currentUser;
+  if (!user || !user.emailVerified) return;
+  const ref = doc(db, 'plant_settings', 'active');
+  const actor = clampStr(user.displayName || user.email || 'admin', 120);
+  const serialized = JSON.stringify(settings).slice(0, 350000);
+  try {
+    const snap = await getDoc(ref);
+    await setDoc(ref, {
+      id: 'active',
+      ownerUid: safeId(user.uid, 'usr'),
+      companyName: clampStr(settings.companyName, 160, 'Arabian Waterproofing Industries'),
+      companySubtitle: clampStr(settings.companySubtitle, 160, 'Gate Pass & Loading Slip Portal'),
+      settingsJson: serialized,
+      updatedBy: actor,
+      createdAt: snap.exists() ? snap.data()?.createdAt || serverTimestamp() : serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  } catch {
+    // Non-blocking sync when Firestore settings rules or network aren't ready
+  }
+}
+

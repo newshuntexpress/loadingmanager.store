@@ -1,6 +1,12 @@
 import React, { useRef, useState } from 'react';
-import { CompanySettings } from '../types';
-import { StorageService } from '../services/storage';
+import { CompanySettings, PlantConfig, PlantSpecificSettings } from '../types';
+import {
+  DEFAULT_JEDDAH_SETTINGS,
+  DEFAULT_PLANTS,
+  StorageService,
+  mergeSettingsWithDefaults,
+  resolveSettingsForPlant,
+} from '../services/storage';
 import { ApiClient } from '../services/api';
 import { processLogoFile, processSignatureFile } from '../utils/logo';
 import {
@@ -23,10 +29,12 @@ import {
   Edit2,
   GitBranch,
   Copy,
+  MapPin,
 } from 'lucide-react';
 
 interface SettingsModalProps {
   settings: CompanySettings;
+  activePlantId?: string;
   isAdmin?: boolean;
   canViewWhatsAppLogs?: boolean;
   waPendingRetryCount?: number;
@@ -36,8 +44,20 @@ interface SettingsModalProps {
   onClose: () => void;
 }
 
+function buildInitialPlantMap(settings: CompanySettings): Record<string, PlantSpecificSettings> {
+  const merged = mergeSettingsWithDefaults(settings);
+  const map: Record<string, PlantSpecificSettings> = {
+    ...(merged.plantSettingsMap || {}),
+  };
+  if (!map.JEDDAH) {
+    map.JEDDAH = { ...DEFAULT_JEDDAH_SETTINGS };
+  }
+  return map;
+}
+
 export const SettingsModal: React.FC<SettingsModalProps> = ({
   settings,
+  activePlantId = 'RIYADH',
   isAdmin = false,
   canViewWhatsAppLogs = true,
   waPendingRetryCount = 0,
@@ -46,30 +66,202 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onSave,
   onClose,
 }) => {
-  const [companyName, setCompanyName] = useState(settings.companyName);
-  const [companySubtitle, setCompanySubtitle] = useState(settings.companySubtitle);
-  const [logoDataUrl, setLogoDataUrl] = useState<string>(settings.logoDataUrl || '');
+  const initialPlants =
+    Array.isArray(settings.plants) && settings.plants.length > 0 ? settings.plants : DEFAULT_PLANTS;
+  const initialEditingPlant = (() => {
+    const clean = (activePlantId || 'RIYADH').trim().toUpperCase();
+    if (clean && clean !== 'ALL' && initialPlants.some((p) => p.id.toUpperCase() === clean)) {
+      return clean;
+    }
+    return 'RIYADH';
+  })();
+
+  const [editingPlantId, setEditingPlantId] = useState<string>(initialEditingPlant);
+  const [baseSettings, setBaseSettings] = useState<CompanySettings>(() =>
+    mergeSettingsWithDefaults(settings)
+  );
+  const [plantSettingsMap, setPlantSettingsMap] = useState<Record<string, PlantSpecificSettings>>(() =>
+    buildInitialPlantMap(settings)
+  );
+
+  const initialResolved = resolveSettingsForPlant(
+    {
+      ...mergeSettingsWithDefaults(settings),
+      plantSettingsMap: buildInitialPlantMap(settings),
+    },
+    initialEditingPlant
+  );
+  const initialOwnOverride =
+    initialEditingPlant === 'RIYADH'
+      ? undefined
+      : buildInitialPlantMap(settings)[initialEditingPlant];
+
+  const [companyName, setCompanyName] = useState(initialResolved.companyName);
+  const [companySubtitle, setCompanySubtitle] = useState(initialResolved.companySubtitle);
+  const [logoDataUrl, setLogoDataUrl] = useState<string>(
+    initialEditingPlant === 'RIYADH'
+      ? initialResolved.logoDataUrl || ''
+      : initialOwnOverride?.logoDataUrl || ''
+  );
   const [logoProcessing, setLogoProcessing] = useState<boolean>(false);
   const logoInputRef = useRef<HTMLInputElement>(null);
   const [storeInchargeSignatureDataUrl, setStoreInchargeSignatureDataUrl] = useState<string>(
-    settings.storeInchargeSignatureDataUrl || ''
+    initialEditingPlant === 'RIYADH'
+      ? initialResolved.storeInchargeSignatureDataUrl || ''
+      : initialOwnOverride?.storeInchargeSignatureDataUrl || ''
   );
   const [signatureProcessing, setSignatureProcessing] = useState<boolean>(false);
   const signatureInputRef = useRef<HTMLInputElement>(null);
-  const [address, setAddress] = useState(settings.address);
-  const [phone, setPhone] = useState(settings.phone);
-  const [email, setEmail] = useState(settings.email);
-  const [gstin, setGstin] = useState(settings.gstin);
-  const [ticketPrefix, setTicketPrefix] = useState(settings.ticketPrefix || 'TK');
-  const [autoPrintTokenAfterSave, setAutoPrintTokenAfterSave] = useState(settings.autoPrintTokenAfterSave ?? true);
-  const [sessionIdleMinutes, setSessionIdleMinutes] = useState<number>(settings.sessionIdleMinutes || 30);
-  const [gates, setGates] = useState<string[]>([...settings.gates]);
+  const [address, setAddress] = useState(initialResolved.address);
+  const [phone, setPhone] = useState(initialResolved.phone);
+  const [email, setEmail] = useState(initialResolved.email);
+  const [gstin, setGstin] = useState(initialResolved.gstin);
+  const [ticketPrefix, setTicketPrefix] = useState(initialResolved.ticketPrefix || 'AWZR');
+  const [autoPrintTokenAfterSave, setAutoPrintTokenAfterSave] = useState(
+    settings.autoPrintTokenAfterSave ?? true
+  );
+  const [sessionIdleMinutes, setSessionIdleMinutes] = useState<number>(
+    settings.sessionIdleMinutes || 30
+  );
+  const [gates, setGates] = useState<string[]>([...initialResolved.gates]);
   const [newGateName, setNewGateName] = useState('');
+  const [plants, setPlants] = useState<PlantConfig[]>(initialPlants);
+  const [newPlantName, setNewPlantName] = useState('');
+  const [newPlantCode, setNewPlantCode] = useState('');
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const isEditingRiyadh = editingPlantId === 'RIYADH';
+  const activePlantConfig =
+    plants.find((p) => p.id.toUpperCase() === editingPlantId) ||
+    DEFAULT_PLANTS.find((p) => p.id === editingPlantId) ||
+    DEFAULT_PLANTS[0];
 
   const showFeedback = (type: 'success' | 'error', text: string) => {
     setFeedback({ type, text });
     setTimeout(() => setFeedback(null), 4000);
+  };
+
+  // Flush current form fields into baseSettings + plantSettingsMap snapshot
+  const captureCurrentFormDraft = (): {
+    nextBase: CompanySettings;
+    nextMap: Record<string, PlantSpecificSettings>;
+  } => {
+    const finalGates = [...gates];
+    const pendingGate = newGateName.trim();
+    if (pendingGate && !finalGates.includes(pendingGate)) {
+      finalGates.push(pendingGate);
+    }
+
+    const nextPlants = plants.length > 0 ? plants : DEFAULT_PLANTS;
+    const nextMap: Record<string, PlantSpecificSettings> = { ...plantSettingsMap };
+    let nextBase: CompanySettings = {
+      ...baseSettings,
+      autoPrintTokenAfterSave,
+      sessionIdleMinutes: Math.max(5, Math.min(720, Number(sessionIdleMinutes) || 30)),
+      plants: nextPlants,
+      ...(settings.plantGates ? { plantGates: settings.plantGates } : {}),
+      ...(settings.whatsappTemplates ? { whatsappTemplates: settings.whatsappTemplates } : {}),
+    };
+
+    const trimmedPrefix =
+      ticketPrefix.trim().toUpperCase() ||
+      (isEditingRiyadh ? 'AWZR' : `${activePlantConfig.code || editingPlantId.slice(0, 3)}`);
+
+    if (isEditingRiyadh) {
+      nextBase = {
+        ...nextBase,
+        companyName: companyName.trim() || 'Factory / Plant Name',
+        companySubtitle: companySubtitle.trim(),
+        logoDataUrl: logoDataUrl || '',
+        storeInchargeSignatureDataUrl: storeInchargeSignatureDataUrl || '',
+        address: address.trim(),
+        phone: phone.trim(),
+        email: email.trim(),
+        gstin: gstin.trim(),
+        ticketPrefix: trimmedPrefix,
+        gates: finalGates,
+      };
+      delete nextMap.RIYADH;
+    } else {
+      const entry: PlantSpecificSettings = {
+        companyName: companyName.trim() || `${nextBase.companyName} - ${activePlantConfig.name.toUpperCase()}`,
+        companySubtitle: companySubtitle.trim(),
+        address: address.trim(),
+        phone: phone.trim(),
+        email: email.trim(),
+        gstin: gstin.trim(),
+        ticketPrefix: trimmedPrefix,
+        gates: finalGates,
+      };
+      if (logoDataUrl.trim()) {
+        entry.logoDataUrl = logoDataUrl.trim();
+      }
+      if (storeInchargeSignatureDataUrl.trim()) {
+        entry.storeInchargeSignatureDataUrl = storeInchargeSignatureDataUrl.trim();
+      }
+      nextMap[editingPlantId] = entry;
+    }
+
+    return { nextBase, nextMap };
+  };
+
+  const loadPlantIntoForm = (
+    targetPlantId: string,
+    draftBase: CompanySettings,
+    draftMap: Record<string, PlantSpecificSettings>
+  ) => {
+    const cleanTarget = targetPlantId.trim().toUpperCase();
+    const synthetic: CompanySettings = {
+      ...draftBase,
+      plantSettingsMap: draftMap,
+    };
+    const resolved = resolveSettingsForPlant(synthetic, cleanTarget);
+    const ownOverride = cleanTarget === 'RIYADH' ? undefined : draftMap[cleanTarget];
+
+    setCompanyName(resolved.companyName);
+    setCompanySubtitle(resolved.companySubtitle);
+    setLogoDataUrl(
+      cleanTarget === 'RIYADH' ? resolved.logoDataUrl || '' : ownOverride?.logoDataUrl || ''
+    );
+    setStoreInchargeSignatureDataUrl(
+      cleanTarget === 'RIYADH'
+        ? resolved.storeInchargeSignatureDataUrl || ''
+        : ownOverride?.storeInchargeSignatureDataUrl || ''
+    );
+    setAddress(resolved.address);
+    setPhone(resolved.phone);
+    setEmail(resolved.email);
+    setGstin(resolved.gstin);
+    setTicketPrefix(resolved.ticketPrefix || 'TK');
+    setGates([...resolved.gates]);
+    setNewGateName('');
+    setEditingPlantId(cleanTarget);
+    setFeedback(null);
+  };
+
+  const handleSelectPlantTab = (targetPlantId: string) => {
+    const cleanTarget = targetPlantId.trim().toUpperCase();
+    if (cleanTarget === editingPlantId) return;
+    const { nextBase, nextMap } = captureCurrentFormDraft();
+    setBaseSettings(nextBase);
+    setPlantSettingsMap(nextMap);
+    loadPlantIntoForm(cleanTarget, nextBase, nextMap);
+  };
+
+  const handleCopyFromRiyadh = () => {
+    if (isEditingRiyadh) return;
+    const { nextBase } = captureCurrentFormDraft();
+    setCompanyName(`${nextBase.companyName} - ${activePlantConfig.name.toUpperCase()}`);
+    setCompanySubtitle(`${activePlantConfig.name} • ${nextBase.companySubtitle}`);
+    setAddress(activePlantConfig.city ? `${activePlantConfig.city} Industrial City, KSA` : nextBase.address);
+    setPhone(nextBase.phone);
+    setEmail(nextBase.email);
+    setGstin(nextBase.gstin);
+    setGates([...nextBase.gates]);
+    showFeedback(
+      'success',
+      `Copied base company info & gates into ${activePlantConfig.name}. Review fields and click "Save Settings".`
+    );
   };
 
   const handleAddGate = () => {
@@ -92,6 +284,53 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setGates(gates.filter((g) => g !== gate));
   };
 
+  const handleAddPlant = () => {
+    const cleanName = newPlantName.trim();
+    const cleanId = cleanName.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 24);
+    const cleanCode = (newPlantCode.trim() || cleanId.slice(0, 3)).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
+    if (!cleanName || !cleanId) {
+      showFeedback('error', 'Enter a valid Plant Name (e.g. Dammam Plant).');
+      return;
+    }
+    if (plants.some((p) => p.id === cleanId || p.name.toLowerCase() === cleanName.toLowerCase())) {
+      showFeedback('error', 'This plant already exists.');
+      return;
+    }
+    const newPlant: PlantConfig = {
+      id: cleanId,
+      name: cleanName,
+      code: cleanCode || cleanId.slice(0, 3),
+      isActive: true,
+    };
+    setPlants([...plants, newPlant]);
+    setNewPlantName('');
+    setNewPlantCode('');
+    setFeedback(null);
+  };
+
+  const handleTogglePlantActive = (id: string) => {
+    if (id === 'RIYADH') return;
+    setPlants((prev) =>
+      prev.map((p) => (p.id === id ? { ...p, isActive: !p.isActive } : p))
+    );
+  };
+
+  const handleRemovePlant = (id: string) => {
+    if (id === 'RIYADH' || id === 'JEDDAH') {
+      showFeedback('error', 'Core plants (Riyadh & Jeddah) cannot be deleted.');
+      return;
+    }
+    if (editingPlantId === id) {
+      handleSelectPlantTab('RIYADH');
+    }
+    setPlants((prev) => prev.filter((p) => p.id !== id));
+    setPlantSettingsMap((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  };
+
   const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = '';
@@ -100,7 +339,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     try {
       const normalizedPng = await processLogoFile(file);
       setLogoDataUrl(normalizedPng);
-      showFeedback('success', 'Logo uploaded! Click "Save Settings" or "Save as Default" to apply across the system.');
+      showFeedback(
+        'success',
+        `${activePlantConfig.name} logo uploaded! Click "Save Settings" or "Save as Default" to apply.`
+      );
     } catch (err: any) {
       showFeedback('error', err?.message || 'Unable to process selected logo image.');
     } finally {
@@ -110,7 +352,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   const handleRemoveLogo = () => {
     setLogoDataUrl('');
-    showFeedback('success', 'Logo removed. Click "Save Settings" to apply.');
+    showFeedback(
+      'success',
+      isEditingRiyadh
+        ? 'Logo removed. Click "Save Settings" to apply.'
+        : 'Plant-specific logo cleared (will fall back to main company logo). Click "Save Settings" to apply.'
+    );
   };
 
   const handleSignatureUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -123,7 +370,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       setStoreInchargeSignatureDataUrl(normalizedPng);
       showFeedback(
         'success',
-        'Digital signature uploaded! Click "Save Settings" or "Save as Default" to show it on Loading Slips.'
+        `${activePlantConfig.name} signature uploaded! Click "Save Settings" or "Save as Default" to show it on Loading Slips.`
       );
     } catch (err: any) {
       showFeedback('error', err?.message || 'Unable to process selected signature image.');
@@ -134,76 +381,89 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   const handleRemoveSignature = () => {
     setStoreInchargeSignatureDataUrl('');
-    showFeedback('success', 'Digital signature removed. Click "Save Settings" to apply.');
+    showFeedback(
+      'success',
+      isEditingRiyadh
+        ? 'Digital signature removed. Click "Save Settings" to apply.'
+        : 'Plant-specific signature cleared (will fall back to default/user signature). Click "Save Settings" to apply.'
+    );
   };
 
   const buildCurrentSettings = (): CompanySettings => {
-    const finalGates = [...gates];
-    const pendingGate = newGateName.trim();
-    if (pendingGate && !finalGates.includes(pendingGate)) {
-      finalGates.push(pendingGate);
-    }
+    const { nextBase, nextMap } = captureCurrentFormDraft();
     return {
-      companyName: companyName.trim() || 'Factory / Plant Name',
-      companySubtitle: companySubtitle.trim(),
-      logoDataUrl: logoDataUrl || '',
-      storeInchargeSignatureDataUrl: storeInchargeSignatureDataUrl || '',
-      address: address.trim(),
-      phone: phone.trim(),
-      email: email.trim(),
-      gstin: gstin.trim(),
-      ticketPrefix: ticketPrefix.trim().toUpperCase() || 'TK',
-      autoPrintTokenAfterSave,
-      sessionIdleMinutes: Math.max(5, Math.min(720, Number(sessionIdleMinutes) || 30)),
-      gates: finalGates,
-      ...(settings.whatsappTemplates ? { whatsappTemplates: settings.whatsappTemplates } : {}),
+      ...nextBase,
+      plantSettingsMap: nextMap,
     };
+  };
+
+  const validateSerializedSize = (candidate: CompanySettings): boolean => {
+    const byteLen = JSON.stringify(candidate).length;
+    if (byteLen > 340000) {
+      showFeedback(
+        'error',
+        'Combined logos & signatures across plants exceed cloud sync size (340KB). Please remove duplicate plant logos or upload smaller images.'
+      );
+      return false;
+    }
+    return true;
   };
 
   const handleSaveAsDefault = async () => {
     const updated = buildCurrentSettings();
+    if (!validateSerializedSize(updated)) return;
     try {
       const saved = await ApiClient.saveAsDefaultSettings(updated);
-      setGates(saved.gates);
-      setNewGateName('');
-      StorageService.saveAsDefaultSettings(saved);
-      onSave(saved);
-      showFeedback('success', 'Current settings saved as Default! All fields and loading gates are now saved as default.');
+      const merged = mergeSettingsWithDefaults(saved);
+      setBaseSettings(merged);
+      setPlantSettingsMap(buildInitialPlantMap(merged));
+      setPlants(Array.isArray(merged.plants) && merged.plants.length > 0 ? merged.plants : DEFAULT_PLANTS);
+      loadPlantIntoForm(editingPlantId, merged, buildInitialPlantMap(merged));
+      StorageService.saveAsDefaultSettings(merged);
+      onSave(merged);
+      showFeedback('success', 'Settings saved as Default across Riyadh, Jeddah & all plants!');
     } catch (err: any) {
       showFeedback('error', err?.message || 'Failed to save default settings.');
     }
   };
 
   const handleRestoreDefault = () => {
-    const def = StorageService.getDefaultSettings();
-    setCompanyName(def.companyName);
-    setCompanySubtitle(def.companySubtitle);
-    setLogoDataUrl(def.logoDataUrl || '');
-    setStoreInchargeSignatureDataUrl(def.storeInchargeSignatureDataUrl || '');
-    setAddress(def.address);
-    setPhone(def.phone);
-    setEmail(def.email);
-    setGstin(def.gstin);
-    setTicketPrefix(def.ticketPrefix || 'TK');
+    const def = mergeSettingsWithDefaults(StorageService.getDefaultSettings());
+    const defMap = buildInitialPlantMap(def);
+    setBaseSettings(def);
+    setPlantSettingsMap(defMap);
     setAutoPrintTokenAfterSave(def.autoPrintTokenAfterSave ?? true);
     setSessionIdleMinutes(def.sessionIdleMinutes || 30);
-    setGates([...def.gates]);
-    setNewGateName('');
-    showFeedback('success', 'Loaded saved default settings into form. Click Save Settings to apply.');
+    setPlants(Array.isArray(def.plants) && def.plants.length > 0 ? def.plants : DEFAULT_PLANTS);
+    loadPlantIntoForm(editingPlantId, def, defMap);
+    showFeedback(
+      'success',
+      `Loaded saved default settings for ${activePlantConfig.name}. Click Save Settings to apply.`
+    );
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const updated = buildCurrentSettings();
+    if (!validateSerializedSize(updated)) return;
     try {
       const saved = await ApiClient.saveSettings(updated);
-      StorageService.saveSettings(saved);
-      onSave(saved);
+      const merged = mergeSettingsWithDefaults(saved);
+      StorageService.saveSettings(merged);
+      onSave(merged);
       onClose();
     } catch (err: any) {
       showFeedback('error', err?.message || 'Failed to save settings.');
     }
   };
+
+  const effectivePreviewLogo = logoDataUrl || (!isEditingRiyadh ? baseSettings.logoDataUrl || '' : '');
+  const effectivePreviewSignature =
+    storeInchargeSignatureDataUrl ||
+    (!isEditingRiyadh ? baseSettings.storeInchargeSignatureDataUrl || '' : '');
+  const effectivePreviewPrefix =
+    ticketPrefix.trim().toUpperCase() ||
+    (isEditingRiyadh ? 'AWZR' : `AWZ-${activePlantConfig.code || editingPlantId.slice(0, 3)}`);
 
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-black/65 backdrop-blur-sm flex items-center justify-center p-3 sm:p-5">
@@ -217,7 +477,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <div>
               <h2 className="text-lg font-bold">Plant & System Settings</h2>
               <p className="text-xs text-neutral-300">
-                Print Header, Company Info & Loading Gates
+                Per-Plant Loading Slip Header, Company Info, Prefix & Loading Gates
               </p>
             </div>
           </div>
@@ -230,17 +490,71 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         </div>
 
         <form onSubmit={handleSubmit} className="p-5 space-y-4 max-h-[80vh] overflow-y-auto">
+          {/* Active Plant Profile Selector Tabs */}
+          <div className="bg-[#EEF4FA] border border-[#BFD5EB] rounded-xl p-3 space-y-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5">
+                <MapPin className="w-4 h-4 text-[#0A6ED1]" />
+                <span className="text-xs font-black text-[#1C2833] uppercase tracking-wide">
+                  Select Plant Settings Profile
+                </span>
+              </div>
+              {!isEditingRiyadh && (
+                <button
+                  type="button"
+                  onClick={handleCopyFromRiyadh}
+                  className="text-[11px] font-bold text-[#0A6ED1] hover:text-[#084B8A] underline cursor-pointer"
+                >
+                  Copy Info from Riyadh
+                </button>
+              )}
+            </div>
+
+            <div className="flex flex-wrap gap-1.5">
+              {plants.map((pl) => {
+                const isSelected = pl.id.toUpperCase() === editingPlantId;
+                return (
+                  <button
+                    key={pl.id}
+                    type="button"
+                    onClick={() => handleSelectPlantTab(pl.id)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-extrabold border transition flex items-center gap-1.5 cursor-pointer ${
+                      isSelected
+                        ? 'bg-[#0A6ED1] text-white border-[#084B8A] shadow-sm'
+                        : 'bg-white text-[#354A5F] border-[#C2D0DF] hover:bg-[#F7FAFD]'
+                    }`}
+                  >
+                    <span
+                      className={`px-1.5 py-0.5 rounded font-mono text-[10px] ${
+                        isSelected ? 'bg-white/20 text-white' : 'bg-[#EFF4F9] text-[#354A5F]'
+                      }`}
+                    >
+                      {pl.code}
+                    </span>
+                    <span>{pl.name}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            <p className="text-[11px] text-[#354A5F] leading-snug">
+              Editing <strong>{activePlantConfig.name} ({activePlantConfig.code})</strong>: Company/Plant Name, Address, Phone, Tax ID, Ticket Prefix, Gates, Logo &amp; Signature configured here appear on <strong>{activePlantConfig.name} Loading Slips</strong> &amp; Gate Tokens.
+            </p>
+          </div>
+
           {/* Company Logo Upload & Live Preview */}
           <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-3">
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-1.5">
                 <ImageIcon className="w-4 h-4 text-blue-700" />
                 <span className="text-xs font-bold text-neutral-800 tracking-wide">
-                  Company Logo (Shown Everywhere)
+                  {isEditingRiyadh
+                    ? 'Company Logo (Shown Everywhere)'
+                    : `${activePlantConfig.name} Logo (Optional Override)`}
                 </span>
               </div>
               <span className="text-[10px] font-semibold text-neutral-500">
-                PNG, JPG, WebP or SVG
+                {!isEditingRiyadh && !logoDataUrl ? 'Using Main Company Logo' : 'PNG, JPG, WebP or SVG'}
               </span>
             </div>
 
@@ -248,9 +562,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               {/* Live Header Preview Box */}
               <div className="flex items-center gap-3 bg-[#354A5F] text-white px-3 py-2.5 rounded-xl border border-[#223242] flex-1 min-w-0">
                 <div className="w-11 h-11 rounded-lg bg-white flex items-center justify-center shrink-0 overflow-hidden ring-1 ring-[#F0AB00]/70 p-1">
-                  {logoDataUrl ? (
+                  {effectivePreviewLogo ? (
                     <img
-                      src={logoDataUrl}
+                      src={effectivePreviewLogo}
                       alt="Company Logo Preview"
                       className="w-full h-full object-contain"
                     />
@@ -314,11 +628,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <div className="flex items-center gap-1.5">
                 <PenTool className="w-4 h-4 text-blue-700" />
                 <span className="text-xs font-bold text-neutral-800 tracking-wide">
-                  Default Store Incharge Signature (Fallback)
+                  {isEditingRiyadh
+                    ? 'Default Store Incharge Signature (Fallback)'
+                    : `${activePlantConfig.name} Store Incharge Signature`}
                 </span>
               </div>
               <span className="text-[10px] font-semibold text-neutral-500">
-                PNG, JPG, WebP or SVG
+                {!isEditingRiyadh && !storeInchargeSignatureDataUrl
+                  ? 'Using Default / User Signature'
+                  : 'PNG, JPG, WebP or SVG'}
               </span>
             </div>
 
@@ -326,12 +644,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               {/* Live Signature Box Preview (matches Loading Slip layout) */}
               <div className="bg-white border border-neutral-300 rounded-xl px-3 py-2 flex-1 min-w-0 flex flex-col items-center justify-between min-h-[68px]">
                 <span className="text-[10px] font-bold text-neutral-700">
-                  Store Incharge Signature
+                  Store Incharge Signature ({activePlantConfig.code})
                 </span>
                 <div className="h-8 w-full flex items-center justify-center my-0.5">
-                  {storeInchargeSignatureDataUrl ? (
+                  {effectivePreviewSignature ? (
                     <img
-                      src={storeInchargeSignatureDataUrl}
+                      src={effectivePreviewSignature}
                       alt="Store Incharge Digital Signature Preview"
                       className="max-h-8 max-w-[180px] object-contain"
                     />
@@ -343,7 +661,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </div>
                 <div className="w-full border-t border-dashed border-neutral-300 pt-0.5 text-center">
                   <span className="text-[9.5px] font-semibold text-neutral-500">
-                    Printed as Store Incharge signature on all generated Loading Slips
+                    Printed on {activePlantConfig.name} Loading Slips
                   </span>
                 </div>
               </div>
@@ -388,7 +706,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
           <div>
             <label className="text-xs font-bold text-neutral-700 block mb-1">
-              Company / Plant Name *
+              Company / Plant Name ({activePlantConfig.code}) *
             </label>
             <input
               type="text"
@@ -400,7 +718,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
           <div>
             <label className="text-xs font-bold text-neutral-700 block mb-1">
-              Subtitle / Tagline
+              Subtitle / Tagline ({activePlantConfig.code})
             </label>
             <input
               type="text"
@@ -412,7 +730,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
           <div>
             <label className="text-xs font-bold text-neutral-700 block mb-1">
-              Plant / Factory Address
+              Plant / Factory Address ({activePlantConfig.code})
             </label>
             <textarea
               value={address}
@@ -422,15 +740,26 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             />
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
               <label className="text-xs font-bold text-neutral-700 block mb-1">
-                Helpdesk / Phone Number
+                Helpdesk / Phone
               </label>
               <input
                 type="text"
                 value={phone}
                 onChange={(e) => setPhone(e.target.value)}
+                className="w-full px-3 py-1.5 text-xs rounded-lg border border-neutral-300 focus:ring-2 focus:ring-blue-500 focus:outline-none bg-white"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-bold text-neutral-700 block mb-1">
+                Plant Email
+              </label>
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
                 className="w-full px-3 py-1.5 text-xs rounded-lg border border-neutral-300 focus:ring-2 focus:ring-blue-500 focus:outline-none bg-white"
               />
             </div>
@@ -449,18 +778,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
           <div>
             <label className="text-xs font-bold text-neutral-700 block mb-1">
-              Ticket Number Prefix
+              Ticket Number Prefix ({activePlantConfig.code})
             </label>
             <div className="flex flex-wrap items-center gap-2">
               <input
                 type="text"
                 value={ticketPrefix}
                 onChange={(e) => setTicketPrefix(e.target.value)}
-                placeholder="e.g. TK"
-                className="w-24 px-3 py-1.5 text-xs font-bold uppercase rounded-lg border border-neutral-300 focus:ring-2 focus:ring-blue-500 focus:outline-none bg-white"
+                placeholder={isEditingRiyadh ? 'e.g. AWZR' : `e.g. AWZ-${activePlantConfig.code}`}
+                className="w-32 px-3 py-1.5 text-xs font-bold uppercase rounded-lg border border-neutral-300 focus:ring-2 focus:ring-blue-500 focus:outline-none bg-white font-mono"
               />
-              <span className="text-[11px] text-neutral-500">
-                (Preview: {ticketPrefix}-20261113-001)
+              <span className="text-[11px] text-neutral-500 font-mono">
+                (Preview: {effectivePreviewPrefix}-20261126-001)
               </span>
             </div>
           </div>
@@ -560,11 +889,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
           )}
 
-          {/* Gate Management */}
+          {/* Gate Management (Per-Plant) */}
           <div className="bg-neutral-50 p-3.5 rounded-xl border border-neutral-200">
             <label className="text-xs font-bold text-neutral-800 uppercase tracking-wide block mb-2 flex items-center gap-1.5">
               <DoorOpen className="w-4 h-4 text-blue-700" />
-              <span>Available Loading Gates:</span>
+              <span>Available Loading Gates ({activePlantConfig.name}):</span>
             </label>
 
             <div className="flex flex-wrap gap-2 mb-3">
@@ -610,6 +939,87 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
           </div>
 
+          {/* Multi-Plant Management */}
+          <div className="bg-neutral-50 p-3.5 rounded-xl border border-neutral-200 space-y-3">
+            <div>
+              <label className="text-xs font-bold text-neutral-800 uppercase tracking-wide flex items-center gap-1.5">
+                <MapPin className="w-4 h-4 text-emerald-700" />
+                <span>Multi-Plant Configuration (Riyadh, Jeddah &amp; Locations)</span>
+              </label>
+              <p className="text-[11px] text-neutral-600 mt-0.5">
+                Each plant maintains isolated Gate Tickets, Ex-Factory logs, Liquid Store tanks, and its own Loading Slip header settings.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              {plants.map((pl) => {
+                const isCore = pl.id === 'RIYADH' || pl.id === 'JEDDAH';
+                return (
+                  <div
+                    key={pl.id}
+                    className={`bg-white border px-3 py-1.5 rounded-xl shadow-sm text-xs font-bold flex items-center gap-2 ${
+                      pl.isActive ? 'border-emerald-300 text-neutral-800' : 'border-neutral-300 text-neutral-400'
+                    }`}
+                  >
+                    <span className="px-1.5 py-0.5 rounded bg-slate-100 font-mono text-[10px] text-slate-700">
+                      {pl.code}
+                    </span>
+                    <span>{pl.name}</span>
+                    {pl.id !== 'RIYADH' && (
+                      <button
+                        type="button"
+                        onClick={() => handleTogglePlantActive(pl.id)}
+                        className={`text-[10px] px-1.5 py-0.5 rounded font-bold cursor-pointer ${
+                          pl.isActive ? 'bg-emerald-100 text-emerald-700' : 'bg-neutral-200 text-neutral-600'
+                        }`}
+                      >
+                        {pl.isActive ? 'Active' : 'Disabled'}
+                      </button>
+                    )}
+                    {!isCore && (
+                      <button
+                        type="button"
+                        onClick={() => handleRemovePlant(pl.id)}
+                        className="text-neutral-400 hover:text-red-500 transition cursor-pointer"
+                        title="Remove custom plant"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {isAdmin && (
+              <div className="flex flex-wrap gap-2">
+                <input
+                  type="text"
+                  value={newPlantName}
+                  onChange={(e) => setNewPlantName(e.target.value)}
+                  placeholder="New plant name e.g. Dammam Plant"
+                  className="flex-1 min-w-[160px] px-3 py-1.5 text-xs rounded-lg border border-neutral-300 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <input
+                  type="text"
+                  value={newPlantCode}
+                  onChange={(e) => setNewPlantCode(e.target.value)}
+                  placeholder="Code (e.g. DMM)"
+                  maxLength={6}
+                  className="w-28 px-3 py-1.5 text-xs font-mono uppercase rounded-lg border border-neutral-300 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <button
+                  type="button"
+                  onClick={handleAddPlant}
+                  className="bg-emerald-700 hover:bg-emerald-800 text-white px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1 cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Add Plant</span>
+                </button>
+              </div>
+            )}
+          </div>
+
           {feedback && (
             <div
               className={`flex items-center gap-2 p-2.5 rounded-xl text-xs font-semibold border ${
@@ -652,7 +1062,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 type="button"
                 onClick={handleSaveAsDefault}
                 className="app-btn w-full md:w-auto bg-emerald-700 hover:bg-emerald-600 text-white shadow"
-                title="Save all current fields & loading gates as permanent default"
+                title="Save all current plant settings & loading gates as permanent default"
               >
                 <BookmarkCheck className="w-4 h-4 shrink-0" />
                 <span>Save as Default</span>

@@ -11,6 +11,8 @@ import {
 } from './types';
 import {
   StorageService,
+  DEFAULT_PLANTS,
+  resolveSettingsForPlant,
   getTodayDateString,
   getCurrentTimeString,
   formatDisplayDate,
@@ -85,6 +87,8 @@ import {
   ShieldCheck,
   KeyRound,
   LogOut,
+  MapPin,
+  Lock,
 } from 'lucide-react';
 
 type AppTab =
@@ -98,6 +102,7 @@ type AppTab =
   | 'liquid'
   | 'exfactory';
 const ACTIVE_TAB_STORAGE_KEY = 'gp_active_tab';
+const ACTIVE_PLANT_STORAGE_KEY = 'gp_active_plant_id';
 const ALLOWED_APP_TABS: ReadonlyArray<AppTab> = [
   'dashboard',
   'list',
@@ -171,7 +176,9 @@ export default function App() {
   const {
     firebaseUser,
     firebaseAuthReady,
-    firestoreProfile,
+    authorizedRecord,
+    firebaseAuthError,
+    clearFirebaseAuthError,
     isFirestoreActive,
     firestoreTickets,
     firestoreMaterials,
@@ -229,6 +236,14 @@ export default function App() {
       // Ignore storage errors
     }
     return 'dashboard';
+  });
+  const [activePlantId, setActivePlantId] = useState<string>(() => {
+    try {
+      const saved = (localStorage.getItem(ACTIVE_PLANT_STORAGE_KEY) || '').trim().toUpperCase();
+      return saved || 'RIYADH';
+    } catch {
+      return 'RIYADH';
+    }
   });
   const [appError, setAppError] = useState<string | null>(null);
 
@@ -292,6 +307,109 @@ export default function App() {
       return currentUser.permissions.includes(perm);
     },
     [currentUser]
+  );
+
+  const availablePlants = (
+    settings.plants && settings.plants.length > 0 ? settings.plants : DEFAULT_PLANTS
+  ).filter((p) => p.isActive || p.id === 'RIYADH');
+
+  const userAllowedPlants: string[] = (() => {
+    if (!currentUser) return ['RIYADH'];
+    if (isAdmin) return ['ALL'];
+    if (!Array.isArray(currentUser.allowedPlants) || currentUser.allowedPlants.length === 0) {
+      return ['RIYADH'];
+    }
+    const normalized = Array.from(
+      new Set(
+        currentUser.allowedPlants
+          .map((p) => String(p || '').trim().toUpperCase())
+          .filter(Boolean)
+      )
+    );
+    if (normalized.includes('ALL')) return ['ALL'];
+    return normalized.length > 0 ? normalized : ['RIYADH'];
+  })();
+
+  const canAccessAllPlants = isAdmin || userAllowedPlants.includes('ALL');
+  const accessiblePlants = canAccessAllPlants
+    ? availablePlants
+    : availablePlants.filter((p) => userAllowedPlants.includes(p.id.toUpperCase()));
+  const effectiveAccessiblePlants =
+    accessiblePlants.length > 0
+      ? accessiblePlants
+      : [availablePlants[0] || DEFAULT_PLANTS[0]];
+
+  const operationalPlantId =
+    activePlantId === 'ALL'
+      ? currentUser?.defaultPlantId &&
+        currentUser.defaultPlantId !== 'ALL' &&
+        effectiveAccessiblePlants.some((p) => p.id === currentUser.defaultPlantId)
+        ? currentUser.defaultPlantId
+        : effectiveAccessiblePlants[0]?.id || 'RIYADH'
+      : activePlantId;
+
+  const operationalSettings =
+    activePlantId === 'ALL' ? settings : resolveSettingsForPlant(settings, operationalPlantId);
+
+  const activePlantMeta =
+    activePlantId === 'ALL'
+      ? { id: 'ALL', name: 'All Authorized Plants', code: 'ALL', city: 'Multi-Plant', isActive: true }
+      : effectiveAccessiblePlants.find((p) => p.id === activePlantId) ||
+        availablePlants.find((p) => p.id === activePlantId) ||
+        effectiveAccessiblePlants[0] ||
+        DEFAULT_PLANTS[0];
+
+  const isMultiPlantSelectable = canAccessAllPlants || effectiveAccessiblePlants.length > 1;
+
+  // Enforce allowed-plant scope whenever authenticated user or configured plants change
+  useEffect(() => {
+    if (!currentUser) return;
+    const allowedIds = effectiveAccessiblePlants.map((p) => p.id.toUpperCase());
+    const currentUpper = (activePlantId || '').trim().toUpperCase();
+    const isValidChoice =
+      (canAccessAllPlants && currentUpper === 'ALL') ||
+      (currentUpper && allowedIds.includes(currentUpper));
+
+    if (!isValidChoice) {
+      const preferred = (currentUser.defaultPlantId || '').trim().toUpperCase();
+      const nextPlant =
+        preferred && (allowedIds.includes(preferred) || (canAccessAllPlants && preferred === 'ALL'))
+          ? preferred
+          : allowedIds[0] || 'RIYADH';
+      setActivePlantId(nextPlant);
+      try {
+        localStorage.setItem(ACTIVE_PLANT_STORAGE_KEY, nextPlant);
+      } catch {
+        // Ignore storage errors
+      }
+    }
+  }, [currentUser, activePlantId, canAccessAllPlants, effectiveAccessiblePlants]);
+
+  const handleSelectActivePlant = useCallback(
+    (nextPlantId: string) => {
+      const clean = nextPlantId.trim().toUpperCase();
+      const allowedIds = effectiveAccessiblePlants.map((p) => p.id.toUpperCase());
+      if (clean === 'ALL' && canAccessAllPlants) {
+        setActivePlantId('ALL');
+        setGateFilter('ALL');
+        try {
+          localStorage.setItem(ACTIVE_PLANT_STORAGE_KEY, 'ALL');
+        } catch {
+          // Ignore storage errors
+        }
+        return;
+      }
+      if (allowedIds.includes(clean)) {
+        setActivePlantId(clean);
+        setGateFilter('ALL');
+        try {
+          localStorage.setItem(ACTIVE_PLANT_STORAGE_KEY, clean);
+        } catch {
+          // Ignore storage errors
+        }
+      }
+    },
+    [canAccessAllPlants, effectiveAccessiblePlants]
   );
 
   const canViewTickets =
@@ -585,6 +703,7 @@ export default function App() {
 
   const handleLogout = useCallback(async () => {
     await ApiClient.logout();
+    clearFirebaseAuthError();
     setCurrentUser(null);
     setTickets([]);
     setLoadingAlerts([]);
@@ -593,7 +712,7 @@ export default function App() {
     setShowSettingsModal(false);
     setMobileHeaderMenuOpen(false);
     setAppError(null);
-  }, []);
+  }, [clearFirebaseAuthError]);
 
   // Register global API session handlers for 401 / forced password change responses
   useEffect(() => {
@@ -657,22 +776,34 @@ export default function App() {
     };
   }, []);
 
-  // Restore Firebase session automatically in static GitHub Pages mode once Firebase Auth hydrates
+  // Restore Firebase session automatically in static hosting mode ONLY if user is Admin-allowlisted & active
   useEffect(() => {
     if (authLoading || !isStaticFirebaseOnlyMode() || !firebaseAuthReady) return;
-    if (firebaseUser && firebaseUser.emailVerified) {
-      const restored = buildAuthUserFromFirebase(firebaseUser, firestoreProfile);
+    if (firebaseUser && firebaseUser.emailVerified && authorizedRecord && authorizedRecord.isActive) {
+      const restored = buildAuthUserFromFirebase(firebaseUser, authorizedRecord);
       if (!currentUser) {
         setCurrentUser(restored);
         setActiveTab(getDefaultTabForUser(restored));
       } else if (
         currentUser.id === restored.id &&
-        currentUser.roleName !== restored.roleName
+        (currentUser.roleName !== restored.roleName ||
+          (currentUser.allowedPlants || []).join(',') !== (restored.allowedPlants || []).join(',') ||
+          currentUser.permissions.join(',') !== restored.permissions.join(','))
       ) {
         setCurrentUser(restored);
       }
+    } else if (!firebaseUser && firebaseAuthError && currentUser) {
+      clearPersistedLoginState();
+      setCurrentUser(null);
     }
-  }, [authLoading, firebaseAuthReady, firebaseUser, firestoreProfile, currentUser]);
+  }, [
+    authLoading,
+    firebaseAuthReady,
+    firebaseUser,
+    authorizedRecord,
+    firebaseAuthError,
+    currentUser,
+  ]);
 
   // Redirect & lock Forklift Operators, Liquid-Store-Only, or Ex-Factory-Only users strictly inside their section
   useEffect(() => {
@@ -1129,8 +1260,10 @@ export default function App() {
         <LoginView
           needsSetup={needsSetup}
           staticFirebaseMode={isStaticFirebaseOnlyMode()}
+          externalAuthError={firebaseAuthError}
           branding={publicBranding}
           onAuthenticated={(user) => {
+            clearFirebaseAuthError();
             setAuthLoading(false);
             setNeedsSetup(false);
             setCurrentUser(user);
@@ -1165,8 +1298,31 @@ export default function App() {
     );
   }
 
+  // Plant-scoped tickets: strictly enforce user's authorized plants + active header plant switcher
+  const plantScopedTickets = tickets.filter((t) => {
+    const tPlant = (t.plantId || 'RIYADH').toUpperCase();
+    if (!canAccessAllPlants && !userAllowedPlants.includes(tPlant)) {
+      return false;
+    }
+    if (activePlantId !== 'ALL' && tPlant !== activePlantId) {
+      return false;
+    }
+    return true;
+  });
+
+  const plantScopedAlerts = loadingAlerts.filter((a) => {
+    const aPlant = (a.plantId || 'RIYADH').toUpperCase();
+    if (!canAccessAllPlants && !userAllowedPlants.includes(aPlant)) {
+      return false;
+    }
+    if (activePlantId !== 'ALL' && aPlant !== activePlantId) {
+      return false;
+    }
+    return true;
+  });
+
   // Filtered tickets sorted by sequence number ascending (#1, #2, #3, ...)
-  const dayTickets = tickets
+  const dayTickets = plantScopedTickets
     .filter((t) => t.date === selectedDate)
     .sort((a, b) => (a.sequenceNumber || 0) - (b.sequenceNumber || 0));
 
@@ -1594,11 +1750,11 @@ export default function App() {
           </button>
 
           <div className="flex items-center gap-2 min-w-0 flex-1">
-            {settings.logoDataUrl ? (
+            {operationalSettings.logoDataUrl ? (
               <div className="w-9 h-9 rounded-lg bg-white flex items-center justify-center shrink-0 ring-1 ring-[#F0AB00]/80 overflow-hidden p-0.5 shadow-[0_2px_0_#1B2836]">
                 <img
-                  src={settings.logoDataUrl}
-                  alt={settings.companyName}
+                  src={operationalSettings.logoDataUrl}
+                  alt={operationalSettings.companyName}
                   className="w-full h-full object-contain"
                 />
               </div>
@@ -1609,10 +1765,11 @@ export default function App() {
             )}
             <div className="min-w-0 flex-1">
               <h1 className="text-xs font-black tracking-wide text-white truncate">
-                {settings.companyName}
+                {operationalSettings.companyName}
               </h1>
               <p className="text-[10px] text-[#CBD8E6] truncate">
                 <span className="text-[#F0AB00] font-extrabold">{activeSectionLabel}</span>
+                {` · ${activePlantMeta.code}`}
                 {!isForkliftOperator && !isLiquidStoreOnly && !isExFactoryOnly && !isSecurityGuardOnly
                   ? ` · ${formatDisplayDate(selectedDate)}`
                   : ''}
@@ -1631,11 +1788,11 @@ export default function App() {
           >
             {/* Compact Logo & Company Title */}
             <div className="flex items-center gap-2 min-w-0 max-w-full">
-              {settings.logoDataUrl ? (
+              {operationalSettings.logoDataUrl ? (
                 <div className="w-8 h-8 rounded-lg bg-white flex items-center justify-center shrink-0 ring-1 ring-[#F0AB00]/80 overflow-hidden p-0.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.9),0_2px_0_#1B2836]">
                   <img
-                    src={settings.logoDataUrl}
-                    alt={settings.companyName}
+                    src={operationalSettings.logoDataUrl}
+                    alt={operationalSettings.companyName}
                     className="w-full h-full object-contain"
                   />
                 </div>
@@ -1647,7 +1804,7 @@ export default function App() {
               <div className="min-w-0">
                 <div className="flex items-center gap-1.5">
                   <h1 className="text-xs sm:text-sm font-black tracking-wide text-white truncate drop-shadow-xs">
-                    {settings.companyName}
+                    {operationalSettings.companyName}
                   </h1>
                   <span
                     className={`hidden lg:inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-extrabold border whitespace-nowrap ${
@@ -1674,13 +1831,48 @@ export default function App() {
                   </span>
                 </div>
                 <p className="text-[10px] text-[#D5E1EE] truncate max-w-md leading-tight">
-                  {settings.companySubtitle}
+                  {operationalSettings.companySubtitle}
                 </p>
               </div>
             </div>
 
-            {/* Signed-In User & Security Controls */}
+            {/* Signed-In User, Active Plant Scope & Security Controls */}
             <div className="flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
+              {isMultiPlantSelectable ? (
+                <div
+                  className="inline-flex items-center gap-1 h-7 px-2 rounded-lg bg-[#1A2B3C] border border-[#4F6B88] text-[11px] font-bold text-white"
+                  title="Switch Active Plant (Access restricted by Administrator)"
+                >
+                  <MapPin className="w-3 h-3 text-[#F0AB00] shrink-0" />
+                  <select
+                    value={activePlantId}
+                    onChange={(e) => handleSelectActivePlant(e.target.value)}
+                    aria-label="Active Plant Selector"
+                    className="bg-transparent text-[11px] font-black text-white focus:outline-none cursor-pointer pr-1"
+                  >
+                    {canAccessAllPlants && (
+                      <option value="ALL" className="bg-[#1B2836] text-white">
+                        ALL PLANTS
+                      </option>
+                    )}
+                    {effectiveAccessiblePlants.map((pl) => (
+                      <option key={pl.id} value={pl.id} className="bg-[#1B2836] text-white">
+                        {pl.name} ({pl.code})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : (
+                <div
+                  className="inline-flex items-center gap-1 h-7 px-2.5 rounded-lg bg-[#1A2B3C] border border-[#4F6B88] text-[11px] font-bold text-[#E2EDF8]"
+                  title="Your account access is restricted to this plant"
+                >
+                  <MapPin className="w-3 h-3 text-[#68D391] shrink-0" />
+                  <span className="font-black text-white">{activePlantMeta.name}</span>
+                  <Lock className="w-2.5 h-2.5 text-[#9BB0C7] shrink-0" />
+                </div>
+              )}
+
               <div
                 className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg bg-[#223344] border border-[#4A6580] text-[11px] font-bold text-[#E2EDF8]"
                 title={`${currentUser.fullName}${currentUser.email ? ` (${currentUser.email})` : ''}`}
@@ -2029,11 +2221,11 @@ export default function App() {
             {/* Drawer Top Brand + Close */}
             <div className="px-4 py-3.5 border-b border-white/15 flex items-center justify-between gap-2 shrink-0">
               <div className="flex items-center gap-2.5 min-w-0">
-                {settings.logoDataUrl ? (
+                {operationalSettings.logoDataUrl ? (
                   <div className="w-10 h-10 rounded-xl bg-white p-0.5 flex items-center justify-center shrink-0 ring-2 ring-[#F0AB00]/80 overflow-hidden">
                     <img
-                      src={settings.logoDataUrl}
-                      alt={settings.companyName}
+                      src={operationalSettings.logoDataUrl}
+                      alt={operationalSettings.companyName}
                       className="w-full h-full object-contain"
                     />
                   </div>
@@ -2043,7 +2235,7 @@ export default function App() {
                   </div>
                 )}
                 <div className="min-w-0">
-                  <p className="text-sm font-black text-white truncate">{settings.companyName}</p>
+                  <p className="text-sm font-black text-white truncate">{operationalSettings.companyName}</p>
                   <p className="text-[11px] text-[#B8CAE0] truncate">
                     {isForkliftOperator
                       ? 'Forklift Operator Section'
@@ -2070,6 +2262,48 @@ export default function App() {
 
             {/* Scrollable Menu Content */}
             <div className="flex-1 overflow-y-auto p-4 space-y-5">
+              {/* Active Plant Switcher (Mobile) */}
+              <div className="space-y-1.5">
+                <p className="text-[11px] font-extrabold uppercase tracking-wider text-[#9BB0C7] px-1">
+                  Authorized Plant
+                </p>
+                {isMultiPlantSelectable ? (
+                  <div className="flex items-center gap-2 px-3 py-2.5 rounded-xl bg-[#2B3E50] border border-[#4F6B88]">
+                    <MapPin className="w-4 h-4 text-[#F0AB00] shrink-0" />
+                    <select
+                      value={activePlantId}
+                      onChange={(e) => {
+                        handleSelectActivePlant(e.target.value);
+                        setMobileHeaderMenuOpen(false);
+                      }}
+                      aria-label="Mobile Active Plant Selector"
+                      className="w-full bg-transparent text-xs font-black text-white focus:outline-none cursor-pointer"
+                    >
+                      {canAccessAllPlants && (
+                        <option value="ALL" className="bg-[#1B2836] text-white">
+                          All Authorized Plants (ALL)
+                        </option>
+                      )}
+                      {effectiveAccessiblePlants.map((pl) => (
+                        <option key={pl.id} value={pl.id} className="bg-[#1B2836] text-white">
+                          {pl.name} ({pl.code})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-between px-3 py-2.5 rounded-xl bg-[#1F3040] border border-[#4A6580] text-xs font-bold text-white">
+                    <span className="inline-flex items-center gap-2">
+                      <MapPin className="w-4 h-4 text-[#68D391]" />
+                      <span>
+                        {activePlantMeta.name} ({activePlantMeta.code})
+                      </span>
+                    </span>
+                    <Lock className="w-3.5 h-3.5 text-[#9BB0C7]" />
+                  </div>
+                )}
+              </div>
+
               {/* Section Links (Hidden for Single-Section Roles) */}
               {!isForkliftOperator && !isLiquidStoreOnly && !isExFactoryOnly && !isSecurityGuardOnly && (
                 <div className="space-y-2">
@@ -2551,10 +2785,10 @@ export default function App() {
         )}
 
         {/* Loading Completed Alerts Banner (Hidden for Restricted Single-Section Users) */}
-        {!isForkliftOperator && !isLiquidStoreOnly && !isExFactoryOnly && !isSecurityGuardOnly && canViewTickets && loadingAlerts.length > 0 && (
+        {!isForkliftOperator && !isLiquidStoreOnly && !isExFactoryOnly && !isSecurityGuardOnly && canViewTickets && plantScopedAlerts.length > 0 && (
           <div className="space-y-2">
-            {loadingAlerts.slice(0, 3).map((alert) => {
-              const matchedTicket = tickets.find((t) => t.id === alert.ticketId);
+            {plantScopedAlerts.slice(0, 3).map((alert) => {
+              const matchedTicket = plantScopedTickets.find((t) => t.id === alert.ticketId);
               return (
                 <div
                   key={alert.id}
@@ -2668,7 +2902,7 @@ export default function App() {
                 className="inset-3d h-9 text-xs font-bold px-2.5 rounded-lg border border-[#C2D0DF] bg-[#F4F8FC] text-[#1C2833] focus:outline-none focus:ring-2 focus:ring-[#0A6ED1] cursor-pointer"
               >
                 <option value="ALL">All Gates</option>
-                {settings.gates.map((g) => (
+                {operationalSettings.gates.map((g) => (
                   <option key={g} value={g}>
                     {g}
                   </option>
@@ -2708,7 +2942,7 @@ export default function App() {
         {!isForkliftOperator && !isLiquidStoreOnly && !isExFactoryOnly && !isSecurityGuardOnly && canViewTickets && activeTab === 'dashboard' && (
           <GateQueueDashboard
             tickets={filteredTickets}
-            settings={settings}
+            settings={operationalSettings}
             date={selectedDate}
             onCallTruck={handleCallTruck}
             onStartLoading={handleStartLoading}
@@ -2726,8 +2960,8 @@ export default function App() {
           !isExFactoryOnly &&
           (isSecurityGuardOnly || (canViewGuardBoard && activeTab === 'guard')) && (
             <SecurityGuardView
-              tickets={tickets}
-              settings={settings}
+              tickets={plantScopedTickets}
+              settings={operationalSettings}
               selectedDate={selectedDate}
               onDateChange={(nextDate) => setSelectedDate(nextDate)}
               onRefresh={() => loadData(false)}
@@ -2739,7 +2973,7 @@ export default function App() {
         {!isForkliftOperator && !isLiquidStoreOnly && !isExFactoryOnly && !isSecurityGuardOnly && canViewTickets && activeTab === 'list' && (
           <TicketTable
             tickets={filteredTickets}
-            gates={settings.gates}
+            gates={operationalSettings.gates}
             onOpenLoadingSlip={(t) => setActiveTicketForSlip(t)}
             onPrintLoadingSlip={(t) => setActiveTicketForPrintSlip(t)}
             onPrintTicket={(t) => setActiveTicketForPrintTicket(t)}
@@ -2758,8 +2992,8 @@ export default function App() {
         {!isForkliftOperator && !isLiquidStoreOnly && !isExFactoryOnly && !isSecurityGuardOnly && canViewDispatchDetails && activeTab === 'dispatch' && (
           <DispatchDetailsView
             key="dispatch-summary"
-            tickets={tickets}
-            settings={settings}
+            tickets={plantScopedTickets}
+            settings={operationalSettings}
             selectedDate={selectedDate}
             canAccessExFactory={canAccessExFactory}
             sectionMode="summary"
@@ -2771,8 +3005,8 @@ export default function App() {
         {!isForkliftOperator && !isLiquidStoreOnly && !isExFactoryOnly && !isSecurityGuardOnly && canViewMaterialRegister && activeTab === 'material_register' && (
           <DispatchDetailsView
             key="material-register"
-            tickets={tickets}
-            settings={settings}
+            tickets={plantScopedTickets}
+            settings={operationalSettings}
             selectedDate={selectedDate}
             canAccessExFactory={canAccessExFactory}
             sectionMode="register"
@@ -2795,7 +3029,7 @@ export default function App() {
           (canOperateForklift ? (
             <ForkliftLoadingView
               tickets={dayTickets}
-              settings={settings}
+              settings={operationalSettings}
               currentUser={currentUser}
               canPrint={canPrintSlips}
               onTicketsRefresh={loadData}
@@ -2824,7 +3058,8 @@ export default function App() {
           (canAccessLiquidStore ? (
             <LiquidMaterialStoreView
               currentUser={currentUser}
-              companyLogoUrl={settings.logoDataUrl}
+              plantId={operationalPlantId}
+              companyLogoUrl={operationalSettings.logoDataUrl}
               canManageStore={canManageLiquidStore}
               canManageMaterials={canManageLiquidMaterials}
             />
@@ -2843,10 +3078,11 @@ export default function App() {
           (canViewExFactory ? (
             <ExFactoryView
               currentUser={currentUser}
+              plantId={operationalPlantId}
               drivers={StorageService.getDrivers()}
               settings={settings}
-              facilityName={settings.companyName}
-              companyLogoUrl={settings.logoDataUrl}
+              facilityName={operationalSettings.companyName}
+              companyLogoUrl={operationalSettings.logoDataUrl}
               canCreate={canCreateExFactory}
               canUpdate={canUpdateExFactory}
               canDelete={canDeleteExFactory}
@@ -2866,7 +3102,7 @@ export default function App() {
       <footer className="bg-white border-t border-neutral-200 py-3 text-center text-xs text-neutral-500">
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
           <p>
-            {settings.companyName} •{' '}
+            {operationalSettings.companyName} •{' '}
             {isLiquidStoreOnly
               ? 'Liquid Material Camp Store'
               : isExFactoryOnly
@@ -2888,6 +3124,7 @@ export default function App() {
       {!isForkliftOperator && !isLiquidStoreOnly && !isExFactoryOnly && !isSecurityGuardOnly && showNewTicketModal && canCreateTickets && (
         <NewTicketModal
           date={selectedDate}
+          plantId={operationalPlantId}
           settings={settings}
           materials={materials}
           currentUserId={currentUser.id}
@@ -2959,7 +3196,7 @@ export default function App() {
       {!isForkliftOperator && !isLiquidStoreOnly && !isExFactoryOnly && !isSecurityGuardOnly && activeTicketForWhatsApp && (
         <WhatsAppModal
           ticket={activeTicketForWhatsApp.ticket}
-          settings={settings}
+          settings={resolveSettingsForPlant(settings, activeTicketForWhatsApp.ticket.plantId)}
           initialTemplateId={activeTicketForWhatsApp.templateId}
           onClose={() => setActiveTicketForWhatsApp(null)}
           onStatusUpdate={(newStatus) => {
@@ -2981,8 +3218,8 @@ export default function App() {
       {/* 7. Daily Report & Export Modal */}
       {!isForkliftOperator && !isLiquidStoreOnly && !isExFactoryOnly && !isSecurityGuardOnly && showDailyReportModal && canViewReports && (
         <DailyReportModal
-          tickets={tickets}
-          settings={settings}
+          tickets={plantScopedTickets}
+          settings={operationalSettings}
           date={selectedDate}
           isAdmin={isAdmin}
           onClose={() => setShowDailyReportModal(false)}
@@ -2994,6 +3231,7 @@ export default function App() {
       {!isForkliftOperator && !isLiquidStoreOnly && !isExFactoryOnly && !isSecurityGuardOnly && showSettingsModal && canManageSettings && (
         <SettingsModal
           settings={settings}
+          activePlantId={operationalPlantId}
           isAdmin={isAdmin}
           canViewWhatsAppLogs={canViewTickets}
           waPendingRetryCount={waPendingRetryCount}
@@ -3022,6 +3260,7 @@ export default function App() {
       {showAdminModal && isAdmin && (
         <AdminDashboardModal
           currentUser={currentUser}
+          plants={settings.plants || DEFAULT_PLANTS}
           onClose={() => setShowAdminModal(false)}
           onUsersUpdated={() => loadData()}
         />

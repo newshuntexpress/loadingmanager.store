@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { jsPDF } from 'jspdf';
 import { AuthUser, CompanySettings, DriverMasterRecord, ExFactoryEntry, TicketRecord, TruckLoadingType } from '../types';
 import { ApiClient, withBackgroundPoll } from '../services/api';
-import { StorageService, formatDisplayDate, getTodayDateString } from '../services/storage';
+import { StorageService, formatDisplayDate, getTodayDateString, resolveSettingsForPlant } from '../services/storage';
 import { importMaterialsBatchToFirestore } from '../services/firestoreData';
 import { drawPdfLogo } from '../utils/logo';
 import { resolveLoadingType } from '../utils/loadingType';
@@ -34,6 +34,7 @@ import {
 
 interface ExFactoryViewProps {
   currentUser: AuthUser;
+  plantId?: string;
   drivers: DriverMasterRecord[];
   settings: CompanySettings;
   facilityName: string;
@@ -101,11 +102,12 @@ function formatExFactoryTime(timestampMs: number): string {
   }
 }
 
-function exFactoryToTicketRecord(entry: ExFactoryEntry, srNo: number): TicketRecord {
+function exFactoryToTicketRecord(entry: ExFactoryEntry, srNo: number, fallbackPlantId = 'RIYADH'): TicketRecord {
   const safeSeq = Math.max(1, srNo);
   const cleanDate = (entry.entryDate || getTodayDateString()).replace(/-/g, '');
   return {
     id: entry.id,
+    plantId: entry.plantId || fallbackPlantId || 'RIYADH',
     ticketNumber: `EXF-${cleanDate}-${String(safeSeq).padStart(3, '0')}`,
     sequenceNumber: safeSeq,
     date: entry.entryDate,
@@ -118,6 +120,7 @@ function exFactoryToTicketRecord(entry: ExFactoryEntry, srNo: number): TicketRec
     iqamaNumber: entry.iqamaNumber || '',
     transporterName: entry.customerName || 'EX-FACTORY',
     destinationPlace: entry.loadingSlip?.placeName || 'EX-FACTORY',
+    loadingType: entry.loadingType,
     delNoteNumber: entry.delNoteNumber,
     status: 'waiting',
     loadingSlip: entry.loadingSlip,
@@ -130,6 +133,7 @@ function exFactoryToTicketRecord(entry: ExFactoryEntry, srNo: number): TicketRec
 
 export const ExFactoryView: React.FC<ExFactoryViewProps> = ({
   currentUser,
+  plantId = 'RIYADH',
   drivers,
   settings,
   facilityName,
@@ -229,8 +233,8 @@ export const ExFactoryView: React.FC<ExFactoryViewProps> = ({
     async (isBackgroundPoll = false) => {
       try {
         const list = isBackgroundPoll
-          ? await withBackgroundPoll(() => ApiClient.getExFactoryEntries())
-          : await ApiClient.getExFactoryEntries();
+          ? await withBackgroundPoll(() => ApiClient.getExFactoryEntries(plantId))
+          : await ApiClient.getExFactoryEntries(plantId);
         setEntries(list);
       } catch (err: any) {
         if (!isBackgroundPoll) {
@@ -242,7 +246,7 @@ export const ExFactoryView: React.FC<ExFactoryViewProps> = ({
         }
       }
     },
-    [showToast]
+    [plantId, showToast]
   );
 
   useEffect(() => {
@@ -391,6 +395,7 @@ export const ExFactoryView: React.FC<ExFactoryViewProps> = ({
       let savedRecord: ExFactoryEntry;
       if (editingId) {
         savedRecord = await ApiClient.updateExFactoryEntry(editingId, {
+          plantId,
           entryDate: autoDate,
           delNoteNumber: cleanDn,
           customerName: cleanCust,
@@ -405,6 +410,7 @@ export const ExFactoryView: React.FC<ExFactoryViewProps> = ({
         showToast('success', `Updated Ex-Factory entry (${savedRecord.delNoteNumber}).`);
       } else {
         savedRecord = await ApiClient.createExFactoryEntry({
+          plantId,
           entryDate: autoDate,
           delNoteNumber: cleanDn,
           customerName: cleanCust,
@@ -1677,8 +1683,8 @@ export const ExFactoryView: React.FC<ExFactoryViewProps> = ({
       {/* Ex-Factory 8-Row Loading Slip Modal (Identical to Main Section) */}
       {activeEntryForSlip && (
         <LoadingSlipModal
-          ticket={exFactoryToTicketRecord(activeEntryForSlip.entry, activeEntryForSlip.srNo)}
-          settings={settings}
+          ticket={exFactoryToTicketRecord(activeEntryForSlip.entry, activeEntryForSlip.srNo, plantId)}
+          settings={resolveSettingsForPlant(settings, activeEntryForSlip.entry.plantId || plantId)}
           materials={StorageService.getMaterials()}
           currentUserId={currentUser.id}
           storeInchargeFullName={currentUser.fullName}
@@ -1692,8 +1698,8 @@ export const ExFactoryView: React.FC<ExFactoryViewProps> = ({
       {/* Ex-Factory 2-Copy A4 Loading Slip Print Preview */}
       {activeEntryForPrintSlip && (
         <LoadingSlipPrintView
-          ticket={exFactoryToTicketRecord(activeEntryForPrintSlip.entry, activeEntryForPrintSlip.srNo)}
-          settings={settings}
+          ticket={exFactoryToTicketRecord(activeEntryForPrintSlip.entry, activeEntryForPrintSlip.srNo, plantId)}
+          settings={resolveSettingsForPlant(settings, activeEntryForPrintSlip.entry.plantId || plantId)}
           currentUserId={currentUser.id}
           storeInchargeFullName={currentUser.fullName}
           storeInchargeSignatureDataUrl={currentUser.signatureDataUrl}
