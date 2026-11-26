@@ -114,7 +114,7 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
   onUsersUpdated,
 }) => {
   const plantOptions = plants && plants.length > 0 ? plants : DEFAULT_PLANTS;
-  const staticMode = isStaticFirebaseOnlyMode();
+  const [staticMode, setStaticMode] = useState<boolean>(() => isStaticFirebaseOnlyMode());
   const [activeTab, setActiveTab] = useState<AdminTab>('users');
   const [users, setUsers] = useState<AuthUser[]>([]);
   const [roles, setRoles] = useState<RoleOption[]>([]);
@@ -239,6 +239,7 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
     } catch (err: any) {
       showToast('error', err?.message || 'Failed to load user & security data.');
     } finally {
+      setStaticMode(isStaticFirebaseOnlyMode());
       setLoading(false);
     }
   }, [currentUser.email, currentUser.username]);
@@ -375,6 +376,7 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
       await loadAll();
       onUsersUpdated?.();
     } catch (err: any) {
+      setStaticMode(isStaticFirebaseOnlyMode());
       showToast('error', err?.message || 'Unable to create user.');
     } finally {
       setCreating(false);
@@ -700,19 +702,20 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
                     </div>
                     <div>
                       <label className="block text-xs font-bold text-[#354A5F] mb-1">
-                        Google / Work Email (Firebase Login)
+                        Google / Work Email (Firebase Login) {staticMode ? '*' : ''}
                       </label>
                       <input
                         type="email"
                         value={newEmail}
                         onChange={(e) => setNewEmail(e.target.value)}
                         placeholder="user@gmail.com"
+                        required={staticMode}
                         className="w-full px-3 py-1.5 text-xs font-semibold rounded-lg border border-[#C2D0DF] bg-white"
                       />
                     </div>
                     <div>
                       <label className="block text-xs font-bold text-[#354A5F] mb-1">
-                        Temporary Password {newEmail.trim() ? '(Optional)' : '*'}
+                        Temporary Password {staticMode ? '(Optional in Firebase mode)' : newEmail.trim() ? '(Optional)' : '*'}
                       </label>
                       <input
                         type="text"

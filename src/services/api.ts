@@ -487,6 +487,24 @@ async function request<T>(url: string, options: RequestInit = {}, skipAuthHooks 
   return data as T;
 }
 
+async function withStaticFallback<T>(
+  staticFn: () => Promise<T>,
+  backendFn: () => Promise<T>
+): Promise<T> {
+  if (staticFirebaseOnlyMode) {
+    return staticFn();
+  }
+  try {
+    return await backendFn();
+  } catch (err) {
+    if (!isStaticNoBackendError(err)) {
+      throw err;
+    }
+    staticFirebaseOnlyMode = true;
+    return staticFn();
+  }
+}
+
 export const ApiClient = {
   // Auth
   async getAuthStatus(): Promise<{
@@ -752,18 +770,20 @@ export const ApiClient = {
 
   // Admin User Management & Audit
   async getRolesAndPermissions(): Promise<{ roles: RoleOption[]; permissions: PermissionOption[] }> {
-    if (staticFirebaseOnlyMode) {
-      return { roles: CANONICAL_ROLES, permissions: CANONICAL_PERMISSIONS };
-    }
-    return request('/api/admin/roles');
+    return withStaticFallback(
+      async () => ({ roles: CANONICAL_ROLES, permissions: CANONICAL_PERMISSIONS }),
+      () => request('/api/admin/roles')
+    );
   },
 
   async getUsers(): Promise<{ users: AuthUser[] }> {
-    if (staticFirebaseOnlyMode) {
-      const users = await listAuthorizedUsersFromFirestore();
-      return { users };
-    }
-    return request('/api/admin/users');
+    return withStaticFallback(
+      async () => {
+        const users = await listAuthorizedUsersFromFirestore();
+        return { users };
+      },
+      () => request('/api/admin/users')
+    );
   },
 
   async createUser(payload: {
@@ -779,53 +799,89 @@ export const ApiClient = {
     defaultPlantId?: string;
     signatureDataUrl?: string;
   }): Promise<{ user: AuthUser }> {
-    if (staticFirebaseOnlyMode) {
-      const now = Date.now();
-      const roleName = payload.roleName || 'user';
-      const allowedPlants =
-        roleName === 'admin'
-          ? ['ALL']
-          : Array.isArray(payload.allowedPlants) && payload.allowedPlants.length > 0
-          ? payload.allowedPlants
-          : ['RIYADH'];
-      const defaultPlantId =
-        payload.defaultPlantId ||
-        (allowedPlants.includes('ALL') ? 'RIYADH' : allowedPlants[0] || 'RIYADH');
-      const user: AuthUser = {
-        id: `usr_${now}_${Math.random().toString(36).slice(2, 6)}`,
-        username: payload.username.trim().toLowerCase(),
-        fullName: payload.fullName.trim(),
-        email: (payload.email || '').trim().toLowerCase(),
-        roleId: `role_${roleName}`,
-        roleName,
-        roleDisplayName: ROLE_DISPLAY_NAME_MAP[roleName] || 'User / Operator',
-        isActive: Boolean(payload.isActive),
-        mustChangePassword: false,
-        lastLoginAt: null,
-        signatureDataUrl: payload.signatureDataUrl || '',
-        createdBy: auth.currentUser?.email || 'admin',
-        createdAt: now,
-        updatedAt: now,
-        permissions:
-          Array.isArray(payload.permissions) && payload.permissions.length > 0
-            ? payload.permissions
-            : getDefaultPermissionsForRole(roleName),
-        allowedPlants,
-        defaultPlantId,
-      };
-      await syncAuthorizedUserToFirestore(user, auth.currentUser?.email || 'admin');
-      await writeAuditLogToFirestore({
-        action: 'USER_CREATED',
-        targetType: 'user',
-        targetId: user.id,
-        details: `Created user ${user.username} (${user.email || 'no-email'}) [${allowedPlants.join(', ')}]`,
-      });
-      return { user };
-    }
-    return request('/api/admin/users', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    });
+    return withStaticFallback(
+      async () => {
+        if (!auth.currentUser || !auth.currentUser.emailVerified) {
+          throw new ApiError(
+            'Please sign in with your verified Administrator Google account to create users in Firebase.',
+            401
+          );
+        }
+        const cleanUsername = payload.username.trim().toLowerCase();
+        if (!/^[a-zA-Z0-9._-]+$/.test(cleanUsername) || cleanUsername.length < 3 || cleanUsername.length > 32) {
+          throw new ApiError(
+            'Username must be 3–32 characters using only letters, numbers, dots (.), underscores (_), or hyphens (-).',
+            400
+          );
+        }
+        const cleanFullName = payload.fullName.trim();
+        if (cleanFullName.length < 2) {
+          throw new ApiError('Full Name must be at least 2 characters.', 400);
+        }
+        const cleanEmail = (payload.email || '').trim().toLowerCase();
+        if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+          throw new ApiError(
+            'A valid Google / Work Email is required in live Firebase mode so the user can sign in.',
+            400
+          );
+        }
+
+        const existingUsers = await listAuthorizedUsersFromFirestore();
+        if (existingUsers.some((u) => u.username.toLowerCase() === cleanUsername)) {
+          throw new ApiError('Username already exists. Please choose another username.', 409);
+        }
+        if (existingUsers.some((u) => (u.email || '').toLowerCase() === cleanEmail)) {
+          throw new ApiError('This email address is already assigned to another user.', 409);
+        }
+
+        const now = Date.now();
+        const roleName = payload.roleName || 'user';
+        const allowedPlants =
+          roleName === 'admin'
+            ? ['ALL']
+            : Array.isArray(payload.allowedPlants) && payload.allowedPlants.length > 0
+            ? payload.allowedPlants
+            : ['RIYADH'];
+        const defaultPlantId =
+          payload.defaultPlantId ||
+          (allowedPlants.includes('ALL') ? 'RIYADH' : allowedPlants[0] || 'RIYADH');
+        const user: AuthUser = {
+          id: `usr_${now}_${Math.random().toString(36).slice(2, 6)}`,
+          username: cleanUsername,
+          fullName: cleanFullName,
+          email: cleanEmail,
+          roleId: `role_${roleName}`,
+          roleName,
+          roleDisplayName: ROLE_DISPLAY_NAME_MAP[roleName] || 'User / Operator',
+          isActive: Boolean(payload.isActive),
+          mustChangePassword: false,
+          lastLoginAt: null,
+          signatureDataUrl: payload.signatureDataUrl || '',
+          createdBy: auth.currentUser?.email || 'admin',
+          createdAt: now,
+          updatedAt: now,
+          permissions:
+            Array.isArray(payload.permissions) && payload.permissions.length > 0
+              ? payload.permissions
+              : getDefaultPermissionsForRole(roleName),
+          allowedPlants,
+          defaultPlantId,
+        };
+        await syncAuthorizedUserToFirestore(user, auth.currentUser?.email || 'admin');
+        await writeAuditLogToFirestore({
+          action: 'USER_CREATED',
+          targetType: 'user',
+          targetId: user.id,
+          details: `Created user ${user.username} (${user.email || 'no-email'}) [${allowedPlants.join(', ')}]`,
+        });
+        return { user };
+      },
+      () =>
+        request('/api/admin/users', {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        })
+    );
   },
 
   async updateUser(
@@ -840,237 +896,274 @@ export const ApiClient = {
       signatureDataUrl?: string;
     }
   ): Promise<{ user: AuthUser }> {
-    if (staticFirebaseOnlyMode) {
-      const existingList = await listAuthorizedUsersFromFirestore();
-      const existing = existingList.find((u) => u.id === userId);
-      if (!existing) {
-        throw new ApiError('User not found in Firestore allowlist.', 404);
-      }
-      const nextRole = payload.roleName ?? existing.roleName;
-      const allowedPlants =
-        nextRole === 'admin'
-          ? ['ALL']
-          : payload.allowedPlants ?? existing.allowedPlants ?? ['RIYADH'];
-      const defaultPlantId =
-        payload.defaultPlantId ??
-        existing.defaultPlantId ??
-        (allowedPlants.includes('ALL') ? 'RIYADH' : allowedPlants[0] || 'RIYADH');
-      const roleChanged = payload.roleName && payload.roleName !== existing.roleName;
-      const updated: AuthUser = {
-        ...existing,
-        fullName: payload.fullName !== undefined ? payload.fullName.trim() : existing.fullName,
-        email: payload.email !== undefined ? payload.email.trim().toLowerCase() : existing.email,
-        roleId: `role_${nextRole}`,
-        roleName: nextRole,
-        roleDisplayName: ROLE_DISPLAY_NAME_MAP[nextRole] || existing.roleDisplayName,
-        isActive: payload.isActive !== undefined ? Boolean(payload.isActive) : existing.isActive,
-        signatureDataUrl:
-          payload.signatureDataUrl !== undefined
-            ? payload.signatureDataUrl
-            : existing.signatureDataUrl,
-        allowedPlants,
-        defaultPlantId,
-        permissions: roleChanged
-          ? getDefaultPermissionsForRole(nextRole)
-          : existing.permissions,
-        updatedAt: Date.now(),
-      };
-      await syncAuthorizedUserToFirestore(
-        updated,
-        auth.currentUser?.email || 'admin',
-        existing.email
-      );
-      await writeAuditLogToFirestore({
-        action: 'USER_UPDATED',
-        targetType: 'user',
-        targetId: updated.id,
-        details: `Updated user ${updated.username} (active=${updated.isActive}, plants=${allowedPlants.join(', ')})`,
-      });
-      return { user: updated };
-    }
-    return request(`/api/admin/users/${encodeURIComponent(userId)}`, {
-      method: 'PATCH',
-      body: JSON.stringify(payload),
-    });
+    return withStaticFallback(
+      async () => {
+        const existingList = await listAuthorizedUsersFromFirestore();
+        const existing = existingList.find((u) => u.id === userId);
+        if (!existing) {
+          throw new ApiError('User not found in Firestore allowlist.', 404);
+        }
+        const nextRole = payload.roleName ?? existing.roleName;
+        const allowedPlants =
+          nextRole === 'admin'
+            ? ['ALL']
+            : payload.allowedPlants ?? existing.allowedPlants ?? ['RIYADH'];
+        const defaultPlantId =
+          payload.defaultPlantId ??
+          existing.defaultPlantId ??
+          (allowedPlants.includes('ALL') ? 'RIYADH' : allowedPlants[0] || 'RIYADH');
+        const roleChanged = payload.roleName && payload.roleName !== existing.roleName;
+        const updated: AuthUser = {
+          ...existing,
+          fullName: payload.fullName !== undefined ? payload.fullName.trim() : existing.fullName,
+          email: payload.email !== undefined ? payload.email.trim().toLowerCase() : existing.email,
+          roleId: `role_${nextRole}`,
+          roleName: nextRole,
+          roleDisplayName: ROLE_DISPLAY_NAME_MAP[nextRole] || existing.roleDisplayName,
+          isActive: payload.isActive !== undefined ? Boolean(payload.isActive) : existing.isActive,
+          signatureDataUrl:
+            payload.signatureDataUrl !== undefined
+              ? payload.signatureDataUrl
+              : existing.signatureDataUrl,
+          allowedPlants,
+          defaultPlantId,
+          permissions: roleChanged
+            ? getDefaultPermissionsForRole(nextRole)
+            : existing.permissions,
+          updatedAt: Date.now(),
+        };
+        await syncAuthorizedUserToFirestore(
+          updated,
+          auth.currentUser?.email || 'admin',
+          existing.email
+        );
+        await writeAuditLogToFirestore({
+          action: 'USER_UPDATED',
+          targetType: 'user',
+          targetId: updated.id,
+          details: `Updated user ${updated.username} (active=${updated.isActive}, plants=${allowedPlants.join(', ')})`,
+        });
+        return { user: updated };
+      },
+      () =>
+        request(`/api/admin/users/${encodeURIComponent(userId)}`, {
+          method: 'PATCH',
+          body: JSON.stringify(payload),
+        })
+    );
   },
 
   async uploadUserSignature(userId: string, signatureDataUrl: string): Promise<{ user: AuthUser }> {
-    if (staticFirebaseOnlyMode) {
-      const existingList = await listAuthorizedUsersFromFirestore();
-      const existing = existingList.find((u) => u.id === userId);
-      if (!existing) throw new ApiError('User not found.', 404);
-      const updated: AuthUser = { ...existing, signatureDataUrl, updatedAt: Date.now() };
-      await syncAuthorizedUserToFirestore(updated, auth.currentUser?.email || 'admin', existing.email);
-      return { user: updated };
-    }
-    return request(`/api/admin/users/${encodeURIComponent(userId)}/signature`, {
-      method: 'PUT',
-      body: JSON.stringify({ signatureDataUrl }),
-    });
+    return withStaticFallback(
+      async () => {
+        const existingList = await listAuthorizedUsersFromFirestore();
+        const existing = existingList.find((u) => u.id === userId);
+        if (!existing) throw new ApiError('User not found.', 404);
+        const updated: AuthUser = { ...existing, signatureDataUrl, updatedAt: Date.now() };
+        await syncAuthorizedUserToFirestore(updated, auth.currentUser?.email || 'admin', existing.email);
+        return { user: updated };
+      },
+      () =>
+        request(`/api/admin/users/${encodeURIComponent(userId)}/signature`, {
+          method: 'PUT',
+          body: JSON.stringify({ signatureDataUrl }),
+        })
+    );
   },
 
   async deleteUserSignature(userId: string): Promise<{ user: AuthUser }> {
-    if (staticFirebaseOnlyMode) {
-      const existingList = await listAuthorizedUsersFromFirestore();
-      const existing = existingList.find((u) => u.id === userId);
-      if (!existing) throw new ApiError('User not found.', 404);
-      const updated: AuthUser = { ...existing, signatureDataUrl: '', updatedAt: Date.now() };
-      await syncAuthorizedUserToFirestore(updated, auth.currentUser?.email || 'admin', existing.email);
-      return { user: updated };
-    }
-    return request(`/api/admin/users/${encodeURIComponent(userId)}/signature`, {
-      method: 'DELETE',
-    });
+    return withStaticFallback(
+      async () => {
+        const existingList = await listAuthorizedUsersFromFirestore();
+        const existing = existingList.find((u) => u.id === userId);
+        if (!existing) throw new ApiError('User not found.', 404);
+        const updated: AuthUser = { ...existing, signatureDataUrl: '', updatedAt: Date.now() };
+        await syncAuthorizedUserToFirestore(updated, auth.currentUser?.email || 'admin', existing.email);
+        return { user: updated };
+      },
+      () =>
+        request(`/api/admin/users/${encodeURIComponent(userId)}/signature`, {
+          method: 'DELETE',
+        })
+    );
   },
 
   async updateUserPermissions(userId: string, permissions: string[]): Promise<{ user: AuthUser }> {
-    if (staticFirebaseOnlyMode) {
-      const existingList = await listAuthorizedUsersFromFirestore();
-      const existing = existingList.find((u) => u.id === userId);
-      if (!existing) throw new ApiError('User not found.', 404);
-      const updated: AuthUser = { ...existing, permissions, updatedAt: Date.now() };
-      await syncAuthorizedUserToFirestore(updated, auth.currentUser?.email || 'admin', existing.email);
-      await writeAuditLogToFirestore({
-        action: 'PERMISSIONS_UPDATED',
-        targetType: 'user',
-        targetId: updated.id,
-        details: `Updated ${permissions.length} permissions for ${updated.username}`,
-      });
-      return { user: updated };
-    }
-    return request(`/api/admin/users/${encodeURIComponent(userId)}/permissions`, {
-      method: 'PUT',
-      body: JSON.stringify({ permissions }),
-    });
+    return withStaticFallback(
+      async () => {
+        const existingList = await listAuthorizedUsersFromFirestore();
+        const existing = existingList.find((u) => u.id === userId);
+        if (!existing) throw new ApiError('User not found.', 404);
+        const updated: AuthUser = { ...existing, permissions, updatedAt: Date.now() };
+        await syncAuthorizedUserToFirestore(updated, auth.currentUser?.email || 'admin', existing.email);
+        await writeAuditLogToFirestore({
+          action: 'PERMISSIONS_UPDATED',
+          targetType: 'user',
+          targetId: updated.id,
+          details: `Updated ${permissions.length} permissions for ${updated.username}`,
+        });
+        return { user: updated };
+      },
+      () =>
+        request(`/api/admin/users/${encodeURIComponent(userId)}/permissions`, {
+          method: 'PUT',
+          body: JSON.stringify({ permissions }),
+        })
+    );
   },
 
   async resetUserPassword(userId: string, temporaryPassword: string): Promise<{ ok: boolean; user: AuthUser }> {
-    if (staticFirebaseOnlyMode) {
-      throw new ApiError(
-        'Local password reset requires the Node.js backend server. In static Firebase hosting, users authenticate with their allowlisted Google account.',
-        400
-      );
-    }
-    return request(`/api/admin/users/${encodeURIComponent(userId)}/reset-password`, {
-      method: 'POST',
-      body: JSON.stringify({ temporaryPassword }),
-    });
+    return withStaticFallback(
+      async () => {
+        throw new ApiError(
+          'Local password reset requires the Node.js backend server. In static Firebase hosting, users authenticate with their allowlisted Google account.',
+          400
+        );
+      },
+      () =>
+        request(`/api/admin/users/${encodeURIComponent(userId)}/reset-password`, {
+          method: 'POST',
+          body: JSON.stringify({ temporaryPassword }),
+        })
+    );
   },
 
   async revokeUserSessions(userId: string): Promise<{ ok: boolean }> {
-    if (staticFirebaseOnlyMode) {
-      await writeAuditLogToFirestore({
-        action: 'SESSIONS_REVOKED',
-        targetType: 'user',
-        targetId: userId,
-        details: `Revoked sessions for user ${userId}`,
-      });
-      return { ok: true };
-    }
-    return request(`/api/admin/users/${encodeURIComponent(userId)}/revoke-sessions`, {
-      method: 'POST',
-    });
+    return withStaticFallback(
+      async () => {
+        await writeAuditLogToFirestore({
+          action: 'SESSIONS_REVOKED',
+          targetType: 'user',
+          targetId: userId,
+          details: `Revoked sessions for user ${userId}`,
+        });
+        return { ok: true };
+      },
+      () =>
+        request(`/api/admin/users/${encodeURIComponent(userId)}/revoke-sessions`, {
+          method: 'POST',
+        })
+    );
   },
 
   async deleteUser(userId: string): Promise<{ ok: boolean }> {
-    if (staticFirebaseOnlyMode) {
-      const existingList = await listAuthorizedUsersFromFirestore();
-      const existing = existingList.find((u) => u.id === userId);
-      if (existing && (existing.email || '').toLowerCase() === DEFAULT_ADMIN_EMAIL) {
-        throw new ApiError('Primary administrator account cannot be deleted.', 400);
-      }
-      await deleteAuthorizedUserFromFirestore(userId, existing?.email);
-      await writeAuditLogToFirestore({
-        action: 'USER_DELETED',
-        targetType: 'user',
-        targetId: userId,
-        details: `Deleted user ${existing?.username || userId} (${existing?.email || 'no-email'})`,
-      });
-      return { ok: true };
-    }
-    return request(`/api/admin/users/${encodeURIComponent(userId)}`, {
-      method: 'DELETE',
-    });
+    return withStaticFallback(
+      async () => {
+        const existingList = await listAuthorizedUsersFromFirestore();
+        const existing = existingList.find((u) => u.id === userId);
+        if (existing && (existing.email || '').toLowerCase() === DEFAULT_ADMIN_EMAIL) {
+          throw new ApiError('Primary administrator account cannot be deleted.', 400);
+        }
+        await deleteAuthorizedUserFromFirestore(userId, existing?.email);
+        await writeAuditLogToFirestore({
+          action: 'USER_DELETED',
+          targetType: 'user',
+          targetId: userId,
+          details: `Deleted user ${existing?.username || userId} (${existing?.email || 'no-email'})`,
+        });
+        return { ok: true };
+      },
+      () =>
+        request(`/api/admin/users/${encodeURIComponent(userId)}`, {
+          method: 'DELETE',
+        })
+    );
   },
 
   async getAuditLogs(params?: { action?: string; search?: string; limit?: number }): Promise<{ logs: AuditLogEntry[] }> {
-    if (staticFirebaseOnlyMode) {
-      const logs = await listAuditLogsFromFirestore(params);
-      return { logs };
-    }
-    const qs = new URLSearchParams();
-    if (params?.action) qs.set('action', params.action);
-    if (params?.search) qs.set('search', params.search);
-    if (params?.limit) qs.set('limit', String(params.limit));
-    const query = qs.toString();
-    return request(`/api/admin/audit-logs${query ? `?${query}` : ''}`);
+    return withStaticFallback(
+      async () => {
+        const logs = await listAuditLogsFromFirestore(params);
+        return { logs };
+      },
+      () => {
+        const qs = new URLSearchParams();
+        if (params?.action) qs.set('action', params.action);
+        if (params?.search) qs.set('search', params.search);
+        if (params?.limit) qs.set('limit', String(params.limit));
+        const query = qs.toString();
+        return request(`/api/admin/audit-logs${query ? `?${query}` : ''}`);
+      }
+    );
   },
 
   async getActiveSessions(): Promise<{ sessions: ActiveSessionInfo[] }> {
-    if (staticFirebaseOnlyMode) {
-      return { sessions: [] };
-    }
-    return request('/api/admin/sessions');
+    return withStaticFallback(
+      async () => ({ sessions: [] }),
+      () => request('/api/admin/sessions')
+    );
   },
 
   // Application Data
   async getTickets(plantId?: string): Promise<TicketRecord[]> {
-    if (staticFirebaseOnlyMode) {
-      const all = StorageService.getTickets();
-      if (plantId && plantId !== 'ALL') {
-        return all.filter((t) => (t.plantId || 'RIYADH').toUpperCase() === plantId.toUpperCase());
+    return withStaticFallback(
+      async () => {
+        const all = StorageService.getTickets();
+        if (plantId && plantId !== 'ALL') {
+          return all.filter((t) => (t.plantId || 'RIYADH').toUpperCase() === plantId.toUpperCase());
+        }
+        return all;
+      },
+      async () => {
+        const qs = plantId && plantId !== 'ALL' ? `?plantId=${encodeURIComponent(plantId)}` : '';
+        const res = await request<{ tickets: TicketRecord[] }>(`/api/tickets${qs}`);
+        return Array.isArray(res?.tickets) ? res.tickets : [];
       }
-      return all;
-    }
-    const qs = plantId && plantId !== 'ALL' ? `?plantId=${encodeURIComponent(plantId)}` : '';
-    const res = await request<{ tickets: TicketRecord[] }>(`/api/tickets${qs}`);
-    return Array.isArray(res?.tickets) ? res.tickets : [];
+    );
   },
 
   async createTicket(payload: Omit<TicketRecord, 'id' | 'createdAt' | 'updatedAt'>): Promise<TicketRecord> {
-    if (staticFirebaseOnlyMode) {
-      const now = Date.now();
-      const created: TicketRecord = {
-        ...payload,
-        id: `tk_${now}_${Math.random().toString(36).slice(2, 7)}`,
-        createdAt: now,
-        updatedAt: now,
-        version: 1,
-      };
-      await saveGateTicketToFirestore(created);
-      StorageService.saveTickets([created, ...StorageService.getTickets()]);
-      return created;
-    }
-    const res = await request<{ ticket: TicketRecord }>('/api/tickets', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    });
-    return res.ticket;
+    return withStaticFallback(
+      async () => {
+        const now = Date.now();
+        const created: TicketRecord = {
+          ...payload,
+          id: `tk_${now}_${Math.random().toString(36).slice(2, 7)}`,
+          createdAt: now,
+          updatedAt: now,
+          version: 1,
+        };
+        await saveGateTicketToFirestore(created);
+        StorageService.saveTickets([created, ...StorageService.getTickets()]);
+        return created;
+      },
+      async () => {
+        const res = await request<{ ticket: TicketRecord }>('/api/tickets', {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        });
+        return res.ticket;
+      }
+    );
   },
 
   async updateTicket(id: string, updates: Partial<TicketRecord>): Promise<TicketRecord> {
-    if (staticFirebaseOnlyMode) {
-      const current = StorageService.getTickets();
-      const existing = current.find((t) => t.id === id);
-      if (!existing) {
-        throw new ApiError('Ticket record not found.', 404);
+    return withStaticFallback(
+      async () => {
+        const current = StorageService.getTickets();
+        const existing = current.find((t) => t.id === id);
+        if (!existing) {
+          throw new ApiError('Ticket record not found.', 404);
+        }
+        const updated: TicketRecord = {
+          ...existing,
+          ...updates,
+          id: existing.id,
+          updatedAt: Date.now(),
+          version: (existing.version || 1) + 1,
+        };
+        await saveGateTicketToFirestore(updated);
+        StorageService.saveTickets(current.map((t) => (t.id === id ? updated : t)));
+        return updated;
+      },
+      async () => {
+        const res = await request<{ ticket: TicketRecord }>(`/api/tickets/${encodeURIComponent(id)}`, {
+          method: 'PATCH',
+          body: JSON.stringify(updates),
+        });
+        return res.ticket;
       }
-      const updated: TicketRecord = {
-        ...existing,
-        ...updates,
-        id: existing.id,
-        updatedAt: Date.now(),
-        version: (existing.version || 1) + 1,
-      };
-      await saveGateTicketToFirestore(updated);
-      StorageService.saveTickets(current.map((t) => (t.id === id ? updated : t)));
-      return updated;
-    }
-    const res = await request<{ ticket: TicketRecord }>(`/api/tickets/${encodeURIComponent(id)}`, {
-      method: 'PATCH',
-      body: JSON.stringify(updates),
-    });
-    return res.ticket;
+    );
   },
 
   async updateTicketWithNotification(
@@ -1081,64 +1174,69 @@ export const ApiClient = {
     whatsappNotification?: WhatsAppDispatchOutcome;
     autoSavedMaterials?: MaterialMasterRecord[];
   }> {
-    if (staticFirebaseOnlyMode) {
-      const ticket = await ApiClient.updateTicket(id, updates);
-      const slipItems = updates.loadingSlip?.items;
-      let autoSavedMaterials: MaterialMasterRecord[] = [];
-      if (Array.isArray(slipItems) && slipItems.length > 0) {
-        const existingMaterials = StorageService.getMaterials();
-        const existingNames = new Set(
-          existingMaterials.map((m) => m.materialName.trim().toUpperCase())
-        );
-        const now = Date.now();
-        const createdList: MaterialMasterRecord[] = [];
-        slipItems.forEach((item, idx) => {
-          const cleanName = String(item?.description || '').trim().toUpperCase();
-          if (!cleanName || existingNames.has(cleanName)) return;
-          existingNames.add(cleanName);
-          const parsedRatio = Number(item?.palletRatio);
-          const palletRatio =
-            Number.isFinite(parsedRatio) && parsedRatio > 0 && parsedRatio <= 10000
-              ? Math.round(parsedRatio)
-              : 23;
-          createdList.push({
-            id: `mat_${now}_${idx}_${Math.random().toString(36).slice(2, 6)}`,
-            materialName: cleanName,
-            packType: String(item?.pack || '').trim() || 'Rolls',
-            palletRatio,
-            remarks: String(item?.remarks || '').trim().toUpperCase(),
-            createdAt: now,
-            updatedAt: now,
+    return withStaticFallback(
+      async () => {
+        const ticket = await ApiClient.updateTicket(id, updates);
+        const slipItems = updates.loadingSlip?.items;
+        let autoSavedMaterials: MaterialMasterRecord[] = [];
+        if (Array.isArray(slipItems) && slipItems.length > 0) {
+          const existingMaterials = StorageService.getMaterials();
+          const existingNames = new Set(
+            existingMaterials.map((m) => m.materialName.trim().toUpperCase())
+          );
+          const now = Date.now();
+          const createdList: MaterialMasterRecord[] = [];
+          slipItems.forEach((item, idx) => {
+            const cleanName = String(item?.description || '').trim().toUpperCase();
+            if (!cleanName || existingNames.has(cleanName)) return;
+            existingNames.add(cleanName);
+            const parsedRatio = Number(item?.palletRatio);
+            const palletRatio =
+              Number.isFinite(parsedRatio) && parsedRatio > 0 && parsedRatio <= 10000
+                ? Math.round(parsedRatio)
+                : 23;
+            createdList.push({
+              id: `mat_${now}_${idx}_${Math.random().toString(36).slice(2, 6)}`,
+              materialName: cleanName,
+              packType: String(item?.pack || '').trim() || 'Rolls',
+              palletRatio,
+              remarks: String(item?.remarks || '').trim().toUpperCase(),
+              createdAt: now,
+              updatedAt: now,
+            });
           });
-        });
-        if (createdList.length > 0) {
-          StorageService.mergeMaterialsCache(createdList);
-          await importMaterialsBatchToFirestore(createdList).catch(() => {});
-          autoSavedMaterials = createdList;
+          if (createdList.length > 0) {
+            StorageService.mergeMaterialsCache(createdList);
+            await importMaterialsBatchToFirestore(createdList).catch(() => {});
+            autoSavedMaterials = createdList;
+          }
         }
-      }
-      return {
-        ticket,
-        ...(autoSavedMaterials.length > 0 ? { autoSavedMaterials } : {}),
-      };
-    }
-    return request<{
-      ticket: TicketRecord;
-      whatsappNotification?: WhatsAppDispatchOutcome;
-      autoSavedMaterials?: MaterialMasterRecord[];
-    }>(`/api/tickets/${encodeURIComponent(id)}`, {
-      method: 'PATCH',
-      body: JSON.stringify(updates),
-    });
+        return {
+          ticket,
+          ...(autoSavedMaterials.length > 0 ? { autoSavedMaterials } : {}),
+        };
+      },
+      () =>
+        request<{
+          ticket: TicketRecord;
+          whatsappNotification?: WhatsAppDispatchOutcome;
+          autoSavedMaterials?: MaterialMasterRecord[];
+        }>(`/api/tickets/${encodeURIComponent(id)}`, {
+          method: 'PATCH',
+          body: JSON.stringify(updates),
+        })
+    );
   },
 
   async getWhatsAppLogs(ticketId?: string): Promise<WhatsAppNotificationLog[]> {
-    if (staticFirebaseOnlyMode) {
-      return [];
-    }
-    const qs = ticketId ? `?ticketId=${encodeURIComponent(ticketId)}` : '';
-    const res = await request<{ logs: WhatsAppNotificationLog[] }>(`/api/whatsapp/logs${qs}`);
-    return Array.isArray(res?.logs) ? res.logs : [];
+    return withStaticFallback(
+      async () => [],
+      async () => {
+        const qs = ticketId ? `?ticketId=${encodeURIComponent(ticketId)}` : '';
+        const res = await request<{ logs: WhatsAppNotificationLog[] }>(`/api/whatsapp/logs${qs}`);
+        return Array.isArray(res?.logs) ? res.logs : [];
+      }
+    );
   },
 
   async retryWhatsAppNotification(
@@ -1151,26 +1249,33 @@ export const ApiClient = {
   },
 
   async deleteTicket(id: string): Promise<void> {
-    if (staticFirebaseOnlyMode) {
-      await deleteGateTicketFromFirestore(id);
-      StorageService.saveTickets(StorageService.getTickets().filter((t) => t.id !== id));
-      return;
-    }
-    await request(`/api/tickets/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    return withStaticFallback(
+      async () => {
+        await deleteGateTicketFromFirestore(id);
+        StorageService.saveTickets(StorageService.getTickets().filter((t) => t.id !== id));
+      },
+      async () => {
+        await request(`/api/tickets/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      }
+    );
   },
 
   async restoreTicket(ticket: TicketRecord): Promise<TicketRecord> {
-    if (staticFirebaseOnlyMode) {
-      const restored: TicketRecord = { ...ticket, updatedAt: Date.now() };
-      await saveGateTicketToFirestore(restored);
-      StorageService.saveTickets([restored, ...StorageService.getTickets()]);
-      return restored;
-    }
-    const res = await request<{ ticket: TicketRecord }>('/api/tickets/restore', {
-      method: 'POST',
-      body: JSON.stringify(ticket),
-    });
-    return res.ticket;
+    return withStaticFallback(
+      async () => {
+        const restored: TicketRecord = { ...ticket, updatedAt: Date.now() };
+        await saveGateTicketToFirestore(restored);
+        StorageService.saveTickets([restored, ...StorageService.getTickets()]);
+        return restored;
+      },
+      async () => {
+        const res = await request<{ ticket: TicketRecord }>('/api/tickets/restore', {
+          method: 'POST',
+          body: JSON.stringify(ticket),
+        });
+        return res.ticket;
+      }
+    );
   },
 
   // Forklift Operator Loading
@@ -1217,73 +1322,96 @@ export const ApiClient = {
   },
 
   async getLoadingAlerts(): Promise<LoadingAlertNotification[]> {
-    if (staticFirebaseOnlyMode) return [];
-    const res = await request<{ alerts: LoadingAlertNotification[] }>('/api/loading-alerts');
-    return Array.isArray(res?.alerts) ? res.alerts : [];
+    return withStaticFallback(
+      async () => [],
+      async () => {
+        const res = await request<{ alerts: LoadingAlertNotification[] }>('/api/loading-alerts');
+        return Array.isArray(res?.alerts) ? res.alerts : [];
+      }
+    );
   },
 
   async dismissLoadingAlert(alertId: string): Promise<void> {
-    if (staticFirebaseOnlyMode) return;
-    await request(`/api/loading-alerts/${encodeURIComponent(alertId)}/dismiss`, {
-      method: 'POST',
-    });
+    return withStaticFallback(
+      async () => undefined,
+      async () => {
+        await request(`/api/loading-alerts/${encodeURIComponent(alertId)}/dismiss`, {
+          method: 'POST',
+        });
+      }
+    );
   },
 
   async getDrivers(): Promise<DriverMasterRecord[]> {
-    if (staticFirebaseOnlyMode) return readStaticDrivers();
-    const res = await request<{ drivers: DriverMasterRecord[] }>('/api/drivers');
-    return Array.isArray(res?.drivers) ? res.drivers : [];
+    return withStaticFallback(
+      async () => readStaticDrivers(),
+      async () => {
+        const res = await request<{ drivers: DriverMasterRecord[] }>('/api/drivers');
+        return Array.isArray(res?.drivers) ? res.drivers : [];
+      }
+    );
   },
 
   async saveDriver(driver: Partial<DriverMasterRecord>): Promise<DriverMasterRecord> {
-    if (staticFirebaseOnlyMode) {
-      const list = readStaticDrivers();
-      const now = Date.now();
-      const existing = driver.id ? list.find((d) => d.id === driver.id) : undefined;
-      const saved: DriverMasterRecord = {
-        id: driver.id || `drv_${now}`,
-        truckNumber: String(driver.truckNumber || '').toUpperCase(),
-        driverName: String(driver.driverName || '').toUpperCase(),
-        driverPhone: String(driver.driverPhone || ''),
-        iqamaNumber: String(driver.iqamaNumber || ''),
-        transporterName: String(driver.transporterName || '').toUpperCase(),
-        defaultDestination: String(driver.defaultDestination || existing?.defaultDestination || '').toUpperCase(),
-        lastVisited: driver.lastVisited || existing?.lastVisited || new Date().toISOString().slice(0, 10),
-        tripCount: typeof driver.tripCount === 'number' ? driver.tripCount : (existing?.tripCount ?? 1),
-      };
-      const next = driver.id
-        ? list.map((d) => (d.id === driver.id ? saved : d))
-        : [saved, ...list];
-      writeStaticDrivers(next);
-      return saved;
-    }
-    if (driver.id) {
-      const res = await request<{ driver: DriverMasterRecord }>(`/api/drivers/${encodeURIComponent(driver.id)}`, {
-        method: 'PUT',
-        body: JSON.stringify(driver),
-      });
-      return res.driver;
-    }
-    const res = await request<{ driver: DriverMasterRecord }>('/api/drivers', {
-      method: 'POST',
-      body: JSON.stringify(driver),
-    });
-    return res.driver;
+    return withStaticFallback(
+      async () => {
+        const list = readStaticDrivers();
+        const now = Date.now();
+        const existing = driver.id ? list.find((d) => d.id === driver.id) : undefined;
+        const saved: DriverMasterRecord = {
+          id: driver.id || `drv_${now}`,
+          truckNumber: String(driver.truckNumber || '').toUpperCase(),
+          driverName: String(driver.driverName || '').toUpperCase(),
+          driverPhone: String(driver.driverPhone || ''),
+          iqamaNumber: String(driver.iqamaNumber || ''),
+          transporterName: String(driver.transporterName || '').toUpperCase(),
+          defaultDestination: String(driver.defaultDestination || existing?.defaultDestination || '').toUpperCase(),
+          lastVisited: driver.lastVisited || existing?.lastVisited || new Date().toISOString().slice(0, 10),
+          tripCount: typeof driver.tripCount === 'number' ? driver.tripCount : (existing?.tripCount ?? 1),
+        };
+        const next = driver.id
+          ? list.map((d) => (d.id === driver.id ? saved : d))
+          : [saved, ...list];
+        writeStaticDrivers(next);
+        return saved;
+      },
+      async () => {
+        if (driver.id) {
+          const res = await request<{ driver: DriverMasterRecord }>(`/api/drivers/${encodeURIComponent(driver.id)}`, {
+            method: 'PUT',
+            body: JSON.stringify(driver),
+          });
+          return res.driver;
+        }
+        const res = await request<{ driver: DriverMasterRecord }>('/api/drivers', {
+          method: 'POST',
+          body: JSON.stringify(driver),
+        });
+        return res.driver;
+      }
+    );
   },
 
   async deleteDriver(id: string): Promise<void> {
-    if (staticFirebaseOnlyMode) {
-      writeStaticDrivers(readStaticDrivers().filter((d) => d.id !== id));
-      return;
-    }
-    await request(`/api/drivers/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    return withStaticFallback(
+      async () => {
+        writeStaticDrivers(readStaticDrivers().filter((d) => d.id !== id));
+      },
+      async () => {
+        await request(`/api/drivers/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      }
+    );
   },
 
   // Material Master
   async getMaterials(): Promise<MaterialMasterRecord[]> {
-    if (staticFirebaseOnlyMode) return StorageService.getMaterials();
-    const res = await request<{ materials: MaterialMasterRecord[] }>('/api/materials');
-    return Array.isArray(res?.materials) ? res.materials : [];
+    return withStaticFallback(
+      async () => StorageService.getMaterials(),
+      async () => {
+        const res = await request<{ materials: MaterialMasterRecord[] }>('/api/materials');
+        return Array.isArray(res?.materials) ? res.materials : [];
+      }
+    );
   },
 
   async createMaterial(payload: {
@@ -1292,26 +1420,30 @@ export const ApiClient = {
     palletRatio: number;
     remarks?: string;
   }): Promise<MaterialMasterRecord> {
-    if (staticFirebaseOnlyMode) {
-      const now = Date.now();
-      const created: MaterialMasterRecord = {
-        id: `mat_${now}_${Math.random().toString(36).slice(2, 6)}`,
-        materialName: payload.materialName.trim().toUpperCase(),
-        packType: payload.packType.trim() || 'Rolls',
-        palletRatio: payload.palletRatio > 0 ? payload.palletRatio : 1,
-        remarks: payload.remarks?.trim() || '',
-        createdAt: now,
-        updatedAt: now,
-      };
-      await saveMaterialToFirestore(created);
-      StorageService.mergeMaterialsCache([created]);
-      return created;
-    }
-    const res = await request<{ material: MaterialMasterRecord }>('/api/materials', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    });
-    return res.material;
+    return withStaticFallback(
+      async () => {
+        const now = Date.now();
+        const created: MaterialMasterRecord = {
+          id: `mat_${now}_${Math.random().toString(36).slice(2, 6)}`,
+          materialName: payload.materialName.trim().toUpperCase(),
+          packType: payload.packType.trim() || 'Rolls',
+          palletRatio: payload.palletRatio > 0 ? payload.palletRatio : 1,
+          remarks: payload.remarks?.trim() || '',
+          createdAt: now,
+          updatedAt: now,
+        };
+        await saveMaterialToFirestore(created);
+        StorageService.mergeMaterialsCache([created]);
+        return created;
+      },
+      async () => {
+        const res = await request<{ material: MaterialMasterRecord }>('/api/materials', {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        });
+        return res.material;
+      }
+    );
   },
 
   async updateMaterial(
@@ -1323,39 +1455,46 @@ export const ApiClient = {
       remarks?: string;
     }
   ): Promise<MaterialMasterRecord> {
-    if (staticFirebaseOnlyMode) {
-      const current = StorageService.getMaterials();
-      const existing = current.find((m) => m.id === id);
-      const updated: MaterialMasterRecord = {
-        id,
-        materialName: payload.materialName.trim().toUpperCase(),
-        packType: payload.packType.trim() || 'Rolls',
-        palletRatio: payload.palletRatio > 0 ? payload.palletRatio : 1,
-        remarks: payload.remarks?.trim() || '',
-        createdAt: existing?.createdAt || Date.now(),
-        updatedAt: Date.now(),
-      };
-      await saveMaterialToFirestore(updated);
-      StorageService.saveMaterials(current.map((m) => (m.id === id ? updated : m)));
-      return updated;
-    }
-    const res = await request<{ material: MaterialMasterRecord }>(
-      `/api/materials/${encodeURIComponent(id)}`,
-      {
-        method: 'PUT',
-        body: JSON.stringify(payload),
+    return withStaticFallback(
+      async () => {
+        const current = StorageService.getMaterials();
+        const existing = current.find((m) => m.id === id);
+        const updated: MaterialMasterRecord = {
+          id,
+          materialName: payload.materialName.trim().toUpperCase(),
+          packType: payload.packType.trim() || 'Rolls',
+          palletRatio: payload.palletRatio > 0 ? payload.palletRatio : 1,
+          remarks: payload.remarks?.trim() || '',
+          createdAt: existing?.createdAt || Date.now(),
+          updatedAt: Date.now(),
+        };
+        await saveMaterialToFirestore(updated);
+        StorageService.saveMaterials(current.map((m) => (m.id === id ? updated : m)));
+        return updated;
+      },
+      async () => {
+        const res = await request<{ material: MaterialMasterRecord }>(
+          `/api/materials/${encodeURIComponent(id)}`,
+          {
+            method: 'PUT',
+            body: JSON.stringify(payload),
+          }
+        );
+        return res.material;
       }
     );
-    return res.material;
   },
 
   async deleteMaterial(id: string): Promise<void> {
-    if (staticFirebaseOnlyMode) {
-      await deleteMaterialFromFirestore(id);
-      StorageService.saveMaterials(StorageService.getMaterials().filter((m) => m.id !== id));
-      return;
-    }
-    await request(`/api/materials/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    return withStaticFallback(
+      async () => {
+        await deleteMaterialFromFirestore(id);
+        StorageService.saveMaterials(StorageService.getMaterials().filter((m) => m.id !== id));
+      },
+      async () => {
+        await request(`/api/materials/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      }
+    );
   },
 
   async importMaterials(payload: {
@@ -1374,105 +1513,118 @@ export const ApiClient = {
     errors: string[];
     materials: MaterialMasterRecord[];
   }> {
-    if (staticFirebaseOnlyMode) {
-      const now = Date.now();
-      const existing = StorageService.getMaterials();
-      const byName = new Map(existing.map((m) => [m.materialName.toUpperCase(), m]));
-      const toWrite: MaterialMasterRecord[] = [];
-      let createdCount = 0;
-      let updatedCount = 0;
-      let skippedCount = 0;
-      const duplicateNames: string[] = [];
+    return withStaticFallback(
+      async () => {
+        const now = Date.now();
+        const existing = StorageService.getMaterials();
+        const byName = new Map(existing.map((m) => [m.materialName.toUpperCase(), m]));
+        const toWrite: MaterialMasterRecord[] = [];
+        let createdCount = 0;
+        let updatedCount = 0;
+        let skippedCount = 0;
+        const duplicateNames: string[] = [];
 
-      payload.items.forEach((item, idx) => {
-        const cleanName = item.materialName.trim().toUpperCase();
-        if (!cleanName) return;
-        const found = byName.get(cleanName);
-        if (found) {
-          duplicateNames.push(cleanName);
-          if (payload.mode === 'skip_existing') {
-            skippedCount += 1;
-            return;
+        payload.items.forEach((item, idx) => {
+          const cleanName = item.materialName.trim().toUpperCase();
+          if (!cleanName) return;
+          const found = byName.get(cleanName);
+          if (found) {
+            duplicateNames.push(cleanName);
+            if (payload.mode === 'skip_existing') {
+              skippedCount += 1;
+              return;
+            }
+            const upd: MaterialMasterRecord = {
+              ...found,
+              packType: item.packType.trim() || found.packType,
+              palletRatio: item.palletRatio > 0 ? item.palletRatio : found.palletRatio,
+              remarks: item.remarks ?? found.remarks,
+              updatedAt: now,
+            };
+            byName.set(cleanName, upd);
+            toWrite.push(upd);
+            updatedCount += 1;
+          } else {
+            const created: MaterialMasterRecord = {
+              id: `mat_${now}_${idx}`,
+              materialName: cleanName,
+              packType: item.packType.trim() || 'Rolls',
+              palletRatio: item.palletRatio > 0 ? item.palletRatio : 1,
+              remarks: item.remarks?.trim() || '',
+              createdAt: now,
+              updatedAt: now,
+            };
+            byName.set(cleanName, created);
+            toWrite.push(created);
+            createdCount += 1;
           }
-          const upd: MaterialMasterRecord = {
-            ...found,
-            packType: item.packType.trim() || found.packType,
-            palletRatio: item.palletRatio > 0 ? item.palletRatio : found.palletRatio,
-            remarks: item.remarks ?? found.remarks,
-            updatedAt: now,
-          };
-          byName.set(cleanName, upd);
-          toWrite.push(upd);
-          updatedCount += 1;
-        } else {
-          const created: MaterialMasterRecord = {
-            id: `mat_${now}_${idx}`,
-            materialName: cleanName,
-            packType: item.packType.trim() || 'Rolls',
-            palletRatio: item.palletRatio > 0 ? item.palletRatio : 1,
-            remarks: item.remarks?.trim() || '',
-            createdAt: now,
-            updatedAt: now,
-          };
-          byName.set(cleanName, created);
-          toWrite.push(created);
-          createdCount += 1;
-        }
-      });
+        });
 
-      if (toWrite.length > 0) {
-        await importMaterialsBatchToFirestore(toWrite);
-      }
-      const all = Array.from(byName.values());
-      StorageService.saveMaterials(all);
-      return {
-        createdCount,
-        updatedCount,
-        skippedCount,
-        duplicateNames,
-        errors: [],
-        materials: all,
-      };
-    }
-    return request('/api/materials/import', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    });
+        if (toWrite.length > 0) {
+          await importMaterialsBatchToFirestore(toWrite);
+        }
+        const all = Array.from(byName.values());
+        StorageService.saveMaterials(all);
+        return {
+          createdCount,
+          updatedCount,
+          skippedCount,
+          duplicateNames,
+          errors: [],
+          materials: all,
+        };
+      },
+      () =>
+        request('/api/materials/import', {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        })
+    );
   },
 
   async getSettings(): Promise<{ settings: CompanySettings | null; defaultSettings: CompanySettings | null }> {
-    if (staticFirebaseOnlyMode) {
-      const cloud = await getPlantSettingsFromFirestore().catch(() => null);
-      const s = cloud ? writeStaticSettings(cloud) : readStaticSettings();
-      return { settings: s, defaultSettings: DEFAULT_SETTINGS };
-    }
-    return request('/api/settings');
+    return withStaticFallback(
+      async () => {
+        const cloud = await getPlantSettingsFromFirestore().catch(() => null);
+        const s = cloud ? writeStaticSettings(cloud) : readStaticSettings();
+        return { settings: s, defaultSettings: DEFAULT_SETTINGS };
+      },
+      () => request('/api/settings')
+    );
   },
 
   async saveSettings(settings: CompanySettings): Promise<CompanySettings> {
-    if (staticFirebaseOnlyMode) {
-      const saved = writeStaticSettings(settings);
-      await savePlantSettingsToFirestore(saved).catch(() => {});
-      return saved;
-    }
-    const res = await request<{ settings: CompanySettings }>('/api/settings', {
-      method: 'PUT',
-      body: JSON.stringify(settings),
-    });
-    return res.settings;
+    return withStaticFallback(
+      async () => {
+        const saved = writeStaticSettings(settings);
+        await savePlantSettingsToFirestore(saved).catch(() => {});
+        return saved;
+      },
+      async () => {
+        const res = await request<{ settings: CompanySettings }>('/api/settings', {
+          method: 'PUT',
+          body: JSON.stringify(settings),
+        });
+        return res.settings;
+      }
+    );
   },
 
   async saveAsDefaultSettings(settings: CompanySettings): Promise<CompanySettings> {
-    if (staticFirebaseOnlyMode) {
-      const saved = writeStaticSettings(settings);
-      await savePlantSettingsToFirestore(saved).catch(() => {});
-      return saved;
-    }
-    const res = await request<{ settings: CompanySettings }>('/api/settings/default', {
-      method: 'PUT',
-      body: JSON.stringify(settings),
-    });
-    return res.settings;
+    return withStaticFallback(
+      async () => {
+        const saved = writeStaticSettings(settings);
+        await savePlantSettingsToFirestore(saved).catch(() => {});
+        return saved;
+      },
+      async () => {
+        const res = await request<{ settings: CompanySettings }>('/api/settings/default', {
+          method: 'PUT',
+          body: JSON.stringify(settings),
+        });
+        return res.settings;
+      }
+    );
   },
 
   async updateWhatsAppTemplates(

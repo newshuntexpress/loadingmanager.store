@@ -581,13 +581,14 @@ export async function syncAuthorizedUserToFirestore(
       ? userRecord.signatureDataUrl
       : '';
 
-  if (
-    !/^[a-zA-Z0-9_-]+$/.test(id) ||
-    !/^[a-zA-Z0-9._-]+$/.test(username) ||
-    username.length < 3 ||
-    displayName.length < 2
-  ) {
-    return;
+  if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
+    throw new Error('Invalid user ID format for Firestore synchronization.');
+  }
+  if (!/^[a-zA-Z0-9._-]+$/.test(username) || username.length < 3) {
+    throw new Error('Username must be 3–32 characters using only letters, numbers, dots, underscores, or hyphens.');
+  }
+  if (displayName.length < 2) {
+    throw new Error('Full Name must be at least 2 characters.');
   }
 
   const ref = doc(db, 'authorized_users', id);
@@ -883,7 +884,7 @@ export function isStaticNoBackendError(err: unknown): boolean {
   const status = (err as { status?: unknown }).status;
   const msg = String((err as { message?: unknown }).message || '').toLowerCase();
   if (status === 404 || status === 405 || status === 501) return true;
-  if (msg.includes('non-json') || msg.includes('unexpected empty')) {
+  if (msg.includes('non-json') || msg.includes('unexpected empty') || msg.includes('request failed (404)')) {
     return true;
   }
   return false;
