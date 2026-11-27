@@ -73,6 +73,66 @@ function clampStr(raw: unknown, maxLen: number, fallback = ''): string {
   return val.slice(0, maxLen);
 }
 
+function sanitizePlantCode(raw: unknown, fallback = 'RIYADH'): string {
+  const cleaned = String(raw ?? '')
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9_-]/g, '')
+    .slice(0, 32);
+  return cleaned.length >= 1 ? cleaned : fallback;
+}
+
+const ALLOWED_GATE_TICKET_KEYS = new Set([
+  'id',
+  'plantId',
+  'ticketNumber',
+  'sequenceNumber',
+  'date',
+  'timeIn',
+  'timeCalled',
+  'timeLoadingStarted',
+  'timeCompleted',
+  'gateNumber',
+  'gateSequenceNumber',
+  'truckNumber',
+  'driverName',
+  'transporterName',
+  'destinationPlace',
+  'loadingType',
+  'delNoteNumber',
+  'status',
+  'loadingSlip',
+  'remarks',
+  'priority',
+  'version',
+  'ownerUid',
+  'isSharedPlant',
+  'createdBy',
+  'updatedBy',
+  'createdAt',
+  'updatedAt',
+]);
+
+const ALLOWED_EX_FACTORY_KEYS = new Set([
+  'id',
+  'plantId',
+  'entryDate',
+  'delNoteNumber',
+  'customerName',
+  'loadingType',
+  'truckNumber',
+  'driverName',
+  'mobileNumber',
+  'iqamaNumber',
+  'loadingSlip',
+  'ownerUid',
+  'isSharedPlant',
+  'createdBy',
+  'updatedBy',
+  'createdAt',
+  'updatedAt',
+]);
+
 function normalizeDateStr(raw: unknown): string {
   const s = typeof raw === 'string' ? raw.trim() : '';
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
@@ -161,7 +221,7 @@ function sanitizeLoadingSlip(slip: LoadingSlipData): Record<string, unknown> {
 
 function buildTicketMutableFields(ticket: TicketRecord, actorLabel: string): Record<string, unknown> {
   const fields: Record<string, unknown> = {
-    plantId: clampStr(ticket.plantId || 'RIYADH', 32, 'RIYADH').toUpperCase(),
+    plantId: sanitizePlantCode(ticket.plantId, 'RIYADH'),
     gateNumber: clampStr(ticket.gateNumber, 40, 'Gate 1'),
     gateSequenceNumber: Math.max(0, Math.round(Number(ticket.gateSequenceNumber) || 0)),
     truckNumber: clampStr(ticket.truckNumber, 40, 'UNKNOWN'),
@@ -327,6 +387,46 @@ export async function saveGateTicketToFirestore(
               }
             : {};
 
+        const hasOnlyAllowedKeys = Boolean(
+          existingTicketData &&
+            Object.keys(existingTicketData).every((k) => ALLOWED_GATE_TICKET_KEYS.has(k))
+        );
+        const existingPlantRaw = existingTicketData?.plantId;
+        const hasValidExistingPlant =
+          typeof existingPlantRaw === 'string' && /^[A-Z0-9_-]{1,32}$/.test(existingPlantRaw);
+        const isCleanExistingSchema =
+          hasOnlyAllowedKeys &&
+          existingTicketData?.id === ticketId &&
+          typeof existingTicketData?.ownerUid === 'string' &&
+          /^[a-zA-Z0-9_-]{1,128}$/.test(existingTicketData.ownerUid) &&
+          hasValidCreatedAt &&
+          typeof existingTicketData?.ticketNumber === 'string' &&
+          existingTicketData.ticketNumber.length >= 1 &&
+          existingTicketData.ticketNumber.length <= 64 &&
+          typeof existingTicketData?.sequenceNumber === 'number' &&
+          Number.isFinite(existingTicketData.sequenceNumber) &&
+          existingTicketData.sequenceNumber >= 0 &&
+          typeof existingTicketData?.date === 'string' &&
+          /^\d{4}-\d{2}-\d{2}$/.test(existingTicketData.date) &&
+          typeof existingTicketData?.timeIn === 'string' &&
+          existingTicketData.timeIn.length <= 32 &&
+          (existingTicketData?.createdBy === undefined ||
+            (typeof existingTicketData.createdBy === 'string' &&
+              existingTicketData.createdBy.length <= 120)) &&
+          (existingPlantRaw === undefined || hasValidExistingPlant) &&
+          typeof existingTicketData?.isSharedPlant === 'boolean';
+
+        currentOp = OperationType.UPDATE;
+        if (isCleanExistingSchema) {
+          const updatePatch: Record<string, unknown> = {
+            ...mutableFields,
+            plantId: existingPlant,
+            updatedAt: serverTimestamp(),
+          };
+          tx.update(ticketRef, updatePatch);
+          return;
+        }
+
         const cleanUpdatePayload: Record<string, unknown> = {
           id: ticketId,
           ticketNumber: preservedTicketNumber,
@@ -341,7 +441,6 @@ export async function saveGateTicketToFirestore(
           updatedAt: serverTimestamp(),
         };
 
-        currentOp = OperationType.UPDATE;
         tx.set(ticketRef, cleanUpdatePayload);
       });
     } catch (error) {
@@ -1000,7 +1099,7 @@ export async function saveExFactoryEntryToFirestore(entry: ExFactoryEntry): Prom
   return withDocLock(`ex_factory_entries/${entryId}`, async () => {
     const ref = doc(db, 'ex_factory_entries', entryId);
     const mutableFields: Record<string, unknown> = {
-      plantId: clampStr(entry.plantId || 'RIYADH', 32, 'RIYADH').toUpperCase(),
+      plantId: sanitizePlantCode(entry.plantId, 'RIYADH'),
       entryDate: normalizeDateStr(entry.entryDate),
       delNoteNumber: clampStr(entry.delNoteNumber, 64, entryId),
       customerName: clampStr(entry.customerName, 160, 'CUSTOMER'),
@@ -1053,7 +1152,29 @@ export async function saveExFactoryEntryToFirestore(entry: ExFactoryEntry): Prom
             ? rawExOwner
             : uid;
 
+        const hasOnlyAllowedExKeys = Boolean(
+          existingData && Object.keys(existingData).every((k) => ALLOWED_EX_FACTORY_KEYS.has(k))
+        );
+        const isCleanExSchema =
+          hasOnlyAllowedExKeys &&
+          existingData?.id === entryId &&
+          typeof existingData?.ownerUid === 'string' &&
+          /^[a-zA-Z0-9_-]{1,128}$/.test(existingData.ownerUid) &&
+          hasValidCreatedAt &&
+          typeof existingData?.plantId === 'string' &&
+          /^[A-Z0-9_-]{1,32}$/.test(existingData.plantId) &&
+          typeof existingData?.isSharedPlant === 'boolean';
+
         currentOp = OperationType.UPDATE;
+        if (isCleanExSchema) {
+          tx.update(ref, {
+            ...mutableFields,
+            plantId: existingPlant,
+            updatedAt: serverTimestamp(),
+          });
+          return;
+        }
+
         tx.set(ref, {
           id: entryId,
           ownerUid: preservedExOwner,
