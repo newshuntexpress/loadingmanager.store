@@ -5,29 +5,118 @@ import { formatSaudiPhoneNumber } from '../utils/whatsapp';
 import { formatDisplayDate, resolveSettingsForPlant } from '../services/storage';
 import { generateLoadingSlipPDF } from '../utils/pdfSlip';
 import { buildDriverLiveStatusUrl, generateQrPngDataUrl } from '../utils/driverStatusUrl';
-import { Printer, Download, X, Scissors, CheckCircle2 } from 'lucide-react';
+import {
+  fetchTicketForPrintWithRetry,
+  isTicketNotFoundError,
+  PRINT_FETCH_MAX_RETRIES,
+} from '../utils/ticketPrintFetch';
+import {
+  Printer,
+  Download,
+  X,
+  Scissors,
+  CheckCircle2,
+  Loader2,
+  RefreshCw,
+  AlertTriangle,
+} from 'lucide-react';
 
 interface LoadingSlipPrintViewProps {
-  ticket: TicketRecord;
+  ticket?: TicketRecord;
+  ticketId?: string;
   settings: CompanySettings;
   currentUserId?: string;
   storeInchargeFullName?: string;
   storeInchargeSignatureDataUrl?: string;
   autoPrint?: boolean;
   onClose: () => void;
+  onTicketResolved?: (ticket: TicketRecord) => void;
 }
 
 export const LoadingSlipPrintView: React.FC<LoadingSlipPrintViewProps> = ({
   ticket,
+  ticketId,
   settings,
   currentUserId,
   storeInchargeFullName,
   storeInchargeSignatureDataUrl,
   autoPrint = false,
   onClose,
+  onTicketResolved,
 }) => {
-  const plantSettings = resolveSettingsForPlant(settings, ticket.plantId);
-  const slip = ticket.loadingSlip;
+  const [resolvedTicket, setResolvedTicket] = useState<TicketRecord | null>(null);
+  const [isFetching, setIsFetching] = useState<boolean>(true);
+  const [retryStatus, setRetryStatus] = useState<{ attempt: number; maxRetries: number } | null>(null);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const [fetchTrigger, setFetchTrigger] = useState<number>(0);
+
+  const printSheetRef = useRef<HTMLDivElement>(null);
+  const [pdfNotice, setPdfNotice] = useState<string | null>(null);
+  const [qrDataUrl, setQrDataUrl] = useState<string>('');
+  const [qrResolved, setQrResolved] = useState<boolean>(false);
+  const autoPrintedRef = useRef<boolean>(false);
+  const ticketRef = useRef(ticket);
+  ticketRef.current = ticket;
+  const onTicketResolvedRef = useRef(onTicketResolved);
+
+  useEffect(() => {
+    onTicketResolvedRef.current = onTicketResolved;
+  }, [onTicketResolved]);
+
+  const targetTicketId = ticketId || ticket?.id || '';
+
+  useEffect(() => {
+    let cancelled = false;
+    const initialTicket = ticketRef.current;
+    setResolvedTicket(null);
+    setIsFetching(true);
+    setRetryStatus(null);
+    setFetchError(null);
+    setQrDataUrl('');
+    setQrResolved(false);
+    autoPrintedRef.current = false;
+
+    fetchTicketForPrintWithRetry({
+      ticket: initialTicket,
+      ticketId: targetTicketId,
+      isCancelled: () => cancelled,
+      onRetryAttempt: (attempt, maxRetries) => {
+        if (!cancelled) {
+          setRetryStatus({ attempt, maxRetries });
+        }
+      },
+    })
+      .then((fetchedTicket) => {
+        if (cancelled) return;
+        setResolvedTicket(fetchedTicket);
+        setIsFetching(false);
+        setRetryStatus(null);
+        setFetchError(null);
+        onTicketResolvedRef.current?.(fetchedTicket);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setIsFetching(false);
+        setRetryStatus(null);
+        const message =
+          err instanceof Error && err.message
+            ? err.message
+            : isTicketNotFoundError(err)
+            ? 'Ticket record not found.'
+            : 'Failed to load loading slip record for printing.';
+        setFetchError(message);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [targetTicketId, fetchTrigger]);
+
+  const plantSettings = resolveSettingsForPlant(
+    settings,
+    resolvedTicket?.plantId || ticket?.plantId
+  );
+  const slip = resolvedTicket?.loadingSlip;
   const hasRecordedPreparer = Boolean(slip?.storeInchargeName || slip?.storeInchargeSignatureDataUrl);
   const isDifferentPreparer = Boolean(
     (slip?.storeInchargeUserId && currentUserId && slip.storeInchargeUserId !== currentUserId) ||
@@ -56,14 +145,14 @@ export const LoadingSlipPrintView: React.FC<LoadingSlipPrintViewProps> = ({
     };
   });
 
-  const printSheetRef = useRef<HTMLDivElement>(null);
-  const [pdfNotice, setPdfNotice] = useState<string | null>(null);
-  const liveStatusUrl = buildDriverLiveStatusUrl(ticket);
-  const [qrDataUrl, setQrDataUrl] = useState<string>('');
-  const [qrResolved, setQrResolved] = useState<boolean>(false);
-  const autoPrintedRef = useRef<boolean>(false);
+  const liveStatusUrl = resolvedTicket ? buildDriverLiveStatusUrl(resolvedTicket) : '';
 
   useEffect(() => {
+    if (!resolvedTicket || !liveStatusUrl) {
+      setQrDataUrl('');
+      setQrResolved(false);
+      return;
+    }
     let cancelled = false;
     setQrResolved(false);
     generateQrPngDataUrl(liveStatusUrl, 360)
@@ -82,15 +171,22 @@ export const LoadingSlipPrintView: React.FC<LoadingSlipPrintViewProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [liveStatusUrl]);
+  }, [resolvedTicket, liveStatusUrl]);
 
   const handleSavePDF = () => {
-    generateLoadingSlipPDF(ticket, plantSettings, displayStoreInchargeName, displaySignatureDataUrl);
+    if (!resolvedTicket) return;
+    generateLoadingSlipPDF(
+      resolvedTicket,
+      plantSettings,
+      displayStoreInchargeName,
+      displaySignatureDataUrl
+    );
     setPdfNotice('2-Copy A4 PDF downloaded! Open the PDF file to view or print.');
     setTimeout(() => setPdfNotice(null), 5000);
   };
 
   const handlePrint = useCallback(() => {
+    if (!resolvedTicket) return;
     let printDialogOpened = false;
     const onBeforePrint = () => {
       printDialogOpened = true;
@@ -110,21 +206,108 @@ export const LoadingSlipPrintView: React.FC<LoadingSlipPrintViewProps> = ({
         typeof window.matchMedia === 'function' && window.matchMedia('print')?.matches
       );
       if (!printDialogOpened && !isPrintMediaActive) {
-        generateLoadingSlipPDF(ticket, plantSettings, displayStoreInchargeName, displaySignatureDataUrl);
+        generateLoadingSlipPDF(
+          resolvedTicket,
+          plantSettings,
+          displayStoreInchargeName,
+          displaySignatureDataUrl
+        );
         setPdfNotice('2-Copy A4 PDF downloaded (preview frame restricts browser print popup). Open the PDF to print!');
         setTimeout(() => setPdfNotice(null), 6000);
       }
     }, 450);
-  }, [ticket, plantSettings, displayStoreInchargeName, displaySignatureDataUrl]);
+  }, [resolvedTicket, plantSettings, displayStoreInchargeName, displaySignatureDataUrl]);
 
   useEffect(() => {
-    if (!autoPrint || autoPrintedRef.current || !qrResolved) return;
+    if (!autoPrint || !resolvedTicket || autoPrintedRef.current || !qrResolved) return;
     autoPrintedRef.current = true;
     const timer = window.setTimeout(() => {
       handlePrint();
     }, 150);
     return () => window.clearTimeout(timer);
-  }, [autoPrint, qrResolved, handlePrint]);
+  }, [autoPrint, resolvedTicket, qrResolved, handlePrint]);
+
+  if (!resolvedTicket) {
+    return createPortal(
+      <div className="loading-slip-print-root fixed inset-0 z-50 overflow-y-auto bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+        <div className="w-full max-w-md rounded-2xl bg-neutral-900 border border-neutral-700 text-white p-6 shadow-2xl">
+          {isFetching ? (
+            <div className="flex flex-col items-center text-center gap-3">
+              <div className="w-12 h-12 rounded-full bg-emerald-500/20 border border-emerald-400/40 flex items-center justify-center">
+                <Loader2 className="w-6 h-6 text-emerald-400 animate-spin" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-white">
+                  {retryStatus ? 'Waiting for Loading Slip Record...' : 'Preparing Loading Slip Print...'}
+                </h3>
+                <p className="text-xs text-neutral-300 mt-1">
+                  {retryStatus
+                    ? `Ticket record not found yet. Retrying API fetch (${retryStatus.attempt}/${PRINT_FETCH_MAX_RETRIES}) while database propagates...`
+                    : 'Fetching latest loading slip record from server...'}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={onClose}
+                className="app-btn mt-2 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border border-neutral-700"
+              >
+                <X className="w-4 h-4 shrink-0" />
+                <span>Cancel</span>
+              </button>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-4">
+              <div className="flex items-start gap-3">
+                <div className="w-10 h-10 rounded-full bg-red-500/20 border border-red-400/40 flex items-center justify-center shrink-0">
+                  <AlertTriangle className="w-5 h-5 text-red-400" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">Unable to Load Loading Slip</h3>
+                  <p className="text-xs text-red-300 mt-1">
+                    {fetchError || 'Ticket record not found.'}
+                  </p>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center justify-end gap-2 pt-2 border-t border-neutral-800">
+                {ticket && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFetchError(null);
+                      setResolvedTicket(ticket);
+                    }}
+                    className="app-btn bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border border-neutral-700"
+                  >
+                    <Printer className="w-4 h-4 shrink-0" />
+                    <span>Print Local Copy</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setFetchTrigger((n) => n + 1)}
+                  className="app-btn bg-emerald-600 hover:bg-emerald-500 text-white"
+                >
+                  <RefreshCw className="w-4 h-4 shrink-0" />
+                  <span>Retry</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="app-btn bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border border-neutral-700"
+                >
+                  <X className="w-4 h-4 shrink-0" />
+                  <span>Close</span>
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>,
+      document.body
+    );
+  }
+
+  const activeTicket = resolvedTicket;
 
   const plantHeaderInfoLine = [
     plantSettings.address,
@@ -172,66 +355,66 @@ export const LoadingSlipPrintView: React.FC<LoadingSlipPrintViewProps> = ({
           <div className="border-r border-b border-black p-1">
             <span className="text-[9px] font-bold text-gray-600 uppercase block">Del Note No:</span>
             <span className="font-extrabold text-[12px] text-black">
-              {slip?.delNoteNumber || ticket.delNoteNumber || '—'}
+              {slip?.delNoteNumber || activeTicket.delNoteNumber || '—'}
             </span>
           </div>
           <div className="border-r border-b border-black p-1">
             <span className="text-[9px] font-bold text-gray-600 uppercase block">Date & Time:</span>
             <span className="font-bold text-black">
-              {formatDisplayDate(ticket.date)} | {ticket.timeLoadingStarted || ticket.timeIn}
+              {formatDisplayDate(activeTicket.date)} | {activeTicket.timeLoadingStarted || activeTicket.timeIn}
             </span>
           </div>
           <div className="border-r border-b border-black p-1">
             <span className="text-[9px] font-bold text-gray-600 uppercase block">
-              {ticket.gateNumber === 'EX-FACTORY' ? 'Ref No:' : 'Ticket No:'}
+              {activeTicket.gateNumber === 'EX-FACTORY' ? 'Ref No:' : 'Ticket No:'}
             </span>
             <span className="font-bold text-black">
-              {ticket.ticketNumber} (#{ticket.sequenceNumber})
+              {activeTicket.ticketNumber} (#{activeTicket.sequenceNumber})
             </span>
           </div>
           <div className="border-b border-black p-1">
             <span className="text-[9px] font-bold text-gray-600 uppercase block">
-              {ticket.gateNumber === 'EX-FACTORY' ? 'Dispatch Mode:' : 'Gate & Queue Pos:'}
+              {activeTicket.gateNumber === 'EX-FACTORY' ? 'Dispatch Mode:' : 'Gate & Queue Pos:'}
             </span>
             <span className="font-extrabold text-[12px] text-black">
-              {ticket.gateNumber === 'EX-FACTORY'
-                ? `EX-FACTORY (#${ticket.gateSequenceNumber})`
-                : `${ticket.gateNumber} (Seq. #${ticket.gateSequenceNumber})`}
+              {activeTicket.gateNumber === 'EX-FACTORY'
+                ? `EX-FACTORY (#${activeTicket.gateSequenceNumber})`
+                : `${activeTicket.gateNumber} (Seq. #${activeTicket.gateSequenceNumber})`}
             </span>
           </div>
 
           <div className="border-r border-black p-1">
             <span className="text-[9px] font-bold text-gray-600 uppercase block">Truck Number:</span>
             <span className="font-black text-[12.5px] tracking-wide text-black">
-              {ticket.truckNumber}
+              {activeTicket.truckNumber}
             </span>
           </div>
           <div className="border-r border-black p-1 flex flex-col justify-between">
             <div>
               <span className="text-[8.5px] font-bold text-gray-600 uppercase block leading-none">Driver Name:</span>
               <span className="font-extrabold text-[11px] text-black truncate block mt-0.5 leading-tight">
-                {ticket.driverName || '—'}
+                {activeTicket.driverName || '—'}
               </span>
             </div>
             <div className="mt-0.5 pt-0.5 border-t border-gray-200">
               <span className="text-[8px] font-bold text-gray-500 uppercase block leading-none">Mobile No:</span>
               <span className="font-bold text-[10px] text-black font-mono leading-tight tracking-tight block">
-                {formatSaudiPhoneNumber(ticket.driverPhone) || '—'}
+                {formatSaudiPhoneNumber(activeTicket.driverPhone) || '—'}
               </span>
             </div>
           </div>
           <div className="border-r border-black p-1">
             <span className="text-[9px] font-bold text-gray-600 uppercase block">Destination / Place:</span>
             <span className="font-extrabold text-[11.5px] text-blue-900 truncate block">
-              {slip?.placeName || ticket.destinationPlace || '—'}
+              {slip?.placeName || activeTicket.destinationPlace || '—'}
             </span>
           </div>
           <div className="p-1">
             <span className="text-[9px] font-bold text-gray-600 uppercase block">
-              {ticket.gateNumber === 'EX-FACTORY' ? 'Customer Name:' : 'Transporter:'}
+              {activeTicket.gateNumber === 'EX-FACTORY' ? 'Customer Name:' : 'Transporter:'}
             </span>
             <span className="font-semibold text-black truncate block">
-              {ticket.transporterName || 'Self / Own'}
+              {activeTicket.transporterName || 'Self / Own'}
             </span>
           </div>
         </div>
@@ -329,7 +512,7 @@ export const LoadingSlipPrintView: React.FC<LoadingSlipPrintViewProps> = ({
               {qrDataUrl ? (
                 <img
                   src={qrDataUrl}
-                  alt={`Live Status QR for ${ticket.truckNumber}`}
+                  alt={`Live Status QR for ${activeTicket.truckNumber}`}
                   className="w-full h-full object-contain block"
                 />
               ) : (
@@ -340,7 +523,7 @@ export const LoadingSlipPrintView: React.FC<LoadingSlipPrintViewProps> = ({
               <p className="text-[8px] font-black uppercase text-black tracking-tight">LIVE STATUS QR</p>
               <p className="text-[7px] text-gray-700 font-medium mt-0.5">Scan at Gate for</p>
               <p className="text-[7px] text-gray-700 font-medium">Queue &amp; Status</p>
-              <p className="text-[8px] font-extrabold text-black mt-1 truncate">{ticket.gateNumber}</p>
+              <p className="text-[8px] font-extrabold text-black mt-1 truncate">{activeTicket.gateNumber}</p>
             </div>
           </div>
           <div className="border border-black/50 p-1 rounded bg-white flex flex-col justify-between min-h-[60px]">

@@ -2194,6 +2194,77 @@ app.get(
   }
 );
 
+app.get(
+  '/api/tickets/:id',
+  requireAuth,
+  requirePasswordChanged,
+  requireAnyPermission([
+    'tickets.view',
+    'slips.print',
+    'forklift.operate',
+    'dispatch.view',
+    'material_register.view',
+    'guard.view',
+  ]),
+  (req: Request, res: Response) => {
+    processAutoLoadingTransitions();
+
+    const ticketId = String(req.params.id || '').trim();
+    if (!ticketId) {
+      res.status(400).json({ error: 'Ticket ID is required.' });
+      return;
+    }
+
+    const row = db
+      .prepare(
+        `SELECT t.id, t.plant_id, t.data_json, t.version, t.created_by, t.updated_by, d.token as driver_status_token
+         FROM tickets t
+         LEFT JOIN driver_slip_tokens d ON d.ticket_id = t.id
+         WHERE t.id = ?`
+      )
+      .get(ticketId) as
+      | {
+          id: string;
+          plant_id: string | null;
+          data_json: string;
+          version: number;
+          created_by: string | null;
+          updated_by: string | null;
+          driver_status_token: string | null;
+        }
+      | undefined;
+
+    if (!row) {
+      res.status(404).json({ error: 'Ticket record not found.' });
+      return;
+    }
+
+    const parsed = JSON.parse(row.data_json);
+    const plantId = normalizePlantId(parsed.plantId || row.plant_id, 'RIYADH');
+    if (!userCanAccessPlant(req.auth!.user, plantId)) {
+      res.status(403).json({ error: `Access denied: Ticket belongs to ${plantId} plant.` });
+      return;
+    }
+
+    let driverStatusToken = row.driver_status_token || undefined;
+    if (!driverStatusToken && parsed.loadingSlip) {
+      driverStatusToken = ensureDriverSlipToken(row.id, parsed.status);
+    }
+
+    const ticket = normalizeTicketRecord({
+      ...parsed,
+      id: row.id,
+      plantId,
+      version: row.version,
+      createdBy: row.created_by || undefined,
+      updatedBy: row.updated_by || undefined,
+      ...(driverStatusToken ? { driverStatusToken } : {}),
+    });
+
+    res.json({ ticket });
+  }
+);
+
 app.post(
   '/api/tickets',
   requireAuth,

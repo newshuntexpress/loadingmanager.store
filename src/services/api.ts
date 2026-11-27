@@ -1258,6 +1258,53 @@ export const ApiClient = {
     );
   },
 
+  async getTicketById(
+    id: string,
+    options?: { allowFirestoreFallback?: boolean }
+  ): Promise<TicketRecord> {
+    const fetchFromFirestore = async (): Promise<TicketRecord> => {
+      const remote = await getGateTicketFromFirestore(id);
+      if (!remote) {
+        throw new ApiError('Ticket record not found.', 404);
+      }
+      const prev = StorageService.getTickets().find((t) => t.id === remote.id);
+      const merged: TicketRecord = {
+        ...remote,
+        driverPhone: remote.driverPhone || prev?.driverPhone || '',
+        iqamaNumber: remote.iqamaNumber || prev?.iqamaNumber || '',
+        driverStatusToken: remote.driverStatusToken || prev?.driverStatusToken,
+      };
+      upsertStaticTicketCache(merged);
+      return merged;
+    };
+
+    if (staticFirebaseOnlyMode) {
+      return fetchFromFirestore();
+    }
+
+    try {
+      const res = await request<{ ticket: TicketRecord }>(`/api/tickets/${encodeURIComponent(id)}`);
+      if (!res?.ticket) {
+        throw new ApiError('Ticket record not found.', 404);
+      }
+      return res.ticket;
+    } catch (err) {
+      if (isStaticNoBackendError(err)) {
+        staticFirebaseOnlyMode = true;
+        return fetchFromFirestore();
+      }
+      if (
+        options?.allowFirestoreFallback &&
+        err instanceof ApiError &&
+        err.status === 404 &&
+        auth.currentUser?.emailVerified
+      ) {
+        return fetchFromFirestore();
+      }
+      throw err;
+    }
+  },
+
   async createTicket(payload: Omit<TicketRecord, 'id' | 'createdAt' | 'updatedAt'>): Promise<TicketRecord> {
     return withStaticFallback(
       async () => {
@@ -2172,6 +2219,15 @@ export const ApiClient = {
         return res.entries;
       }
     );
+  },
+
+  async getExFactoryEntryById(id: string, plantId?: string): Promise<ExFactoryEntry> {
+    const entries = await this.getExFactoryEntries(plantId);
+    const matched = entries.find((entry) => entry.id === id);
+    if (!matched) {
+      throw new ApiError('Ticket record not found.', 404);
+    }
+    return matched;
   },
 
   async createExFactoryEntry(payload: {

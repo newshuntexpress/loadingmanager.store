@@ -4,32 +4,115 @@ import { TicketRecord, CompanySettings } from '../types';
 import { formatSaudiPhoneNumber } from '../utils/whatsapp';
 import { formatDisplayDate, resolveSettingsForPlant } from '../services/storage';
 import { generateGateTokenPDF } from '../utils/pdfSlip';
-import { Printer, Download, X, CheckCircle2, ShieldCheck } from 'lucide-react';
+import {
+  fetchTicketForPrintWithRetry,
+  isTicketNotFoundError,
+  PRINT_FETCH_MAX_RETRIES,
+} from '../utils/ticketPrintFetch';
+import {
+  Printer,
+  Download,
+  X,
+  CheckCircle2,
+  ShieldCheck,
+  Loader2,
+  RefreshCw,
+  AlertTriangle,
+} from 'lucide-react';
 
 interface TicketPrintViewProps {
-  ticket: TicketRecord;
+  ticket?: TicketRecord;
+  ticketId?: string;
   settings: CompanySettings;
   autoPrint?: boolean;
   onClose: () => void;
+  onTicketResolved?: (ticket: TicketRecord) => void;
 }
 
 export const TicketPrintView: React.FC<TicketPrintViewProps> = ({
   ticket,
+  ticketId,
   settings,
   autoPrint = false,
   onClose,
+  onTicketResolved,
 }) => {
-  const plantSettings = resolveSettingsForPlant(settings, ticket.plantId);
+  const [resolvedTicket, setResolvedTicket] = useState<TicketRecord | null>(null);
+  const [isFetching, setIsFetching] = useState<boolean>(true);
+  const [retryStatus, setRetryStatus] = useState<{ attempt: number; maxRetries: number } | null>(null);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const [fetchTrigger, setFetchTrigger] = useState<number>(0);
   const [pdfNotice, setPdfNotice] = useState<string | null>(null);
   const autoPrintedRef = useRef(false);
+  const ticketRef = useRef(ticket);
+  ticketRef.current = ticket;
+  const onTicketResolvedRef = useRef(onTicketResolved);
+
+  useEffect(() => {
+    onTicketResolvedRef.current = onTicketResolved;
+  }, [onTicketResolved]);
+
+  const targetTicketId = ticketId || ticket?.id || '';
+
+  useEffect(() => {
+    let cancelled = false;
+    const initialTicket = ticketRef.current;
+    setResolvedTicket(null);
+    setIsFetching(true);
+    setRetryStatus(null);
+    setFetchError(null);
+    autoPrintedRef.current = false;
+
+    fetchTicketForPrintWithRetry({
+      ticket: initialTicket,
+      ticketId: targetTicketId,
+      isCancelled: () => cancelled,
+      onRetryAttempt: (attempt, maxRetries) => {
+        if (!cancelled) {
+          setRetryStatus({ attempt, maxRetries });
+        }
+      },
+    })
+      .then((fetchedTicket) => {
+        if (cancelled) return;
+        setResolvedTicket(fetchedTicket);
+        setIsFetching(false);
+        setRetryStatus(null);
+        setFetchError(null);
+        onTicketResolvedRef.current?.(fetchedTicket);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setIsFetching(false);
+        setRetryStatus(null);
+        const message =
+          err instanceof Error && err.message
+            ? err.message
+            : isTicketNotFoundError(err)
+            ? 'Ticket record not found.'
+            : 'Failed to load ticket record for printing.';
+        setFetchError(message);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [targetTicketId, fetchTrigger]);
+
+  const plantSettings = resolveSettingsForPlant(
+    settings,
+    resolvedTicket?.plantId || ticket?.plantId
+  );
 
   const handleSavePDF = () => {
-    generateGateTokenPDF(ticket, plantSettings);
+    if (!resolvedTicket) return;
+    generateGateTokenPDF(resolvedTicket, plantSettings);
     setPdfNotice('Gate Token PDF downloaded!');
     setTimeout(() => setPdfNotice(null), 4000);
   };
 
   const handlePrint = useCallback(() => {
+    if (!resolvedTicket) return;
     let printDialogOpened = false;
     const onBeforePrint = () => {
       printDialogOpened = true;
@@ -46,21 +129,103 @@ export const TicketPrintView: React.FC<TicketPrintViewProps> = ({
     setTimeout(() => {
       window.removeEventListener('beforeprint', onBeforePrint);
       if (!printDialogOpened) {
-        generateGateTokenPDF(ticket, plantSettings);
+        generateGateTokenPDF(resolvedTicket, plantSettings);
         setPdfNotice('Gate Token PDF downloaded (preview frame restricts browser print popup).');
         setTimeout(() => setPdfNotice(null), 5000);
       }
     }, 250);
-  }, [ticket, plantSettings]);
+  }, [resolvedTicket, plantSettings]);
 
   useEffect(() => {
-    if (!autoPrint || autoPrintedRef.current) return;
+    if (!autoPrint || !resolvedTicket || autoPrintedRef.current) return;
     autoPrintedRef.current = true;
     const timer = window.setTimeout(() => {
       handlePrint();
     }, 150);
     return () => window.clearTimeout(timer);
-  }, [autoPrint, handlePrint]);
+  }, [autoPrint, resolvedTicket, handlePrint]);
+
+  if (!resolvedTicket) {
+    return createPortal(
+      <div className="ticket-print-root fixed inset-0 z-50 overflow-y-auto bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+        <div className="w-full max-w-md rounded-2xl bg-neutral-900 border border-neutral-700 text-white p-6 shadow-2xl">
+          {isFetching ? (
+            <div className="flex flex-col items-center text-center gap-3">
+              <div className="w-12 h-12 rounded-full bg-indigo-500/20 border border-indigo-400/40 flex items-center justify-center">
+                <Loader2 className="w-6 h-6 text-indigo-400 animate-spin" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-white">
+                  {retryStatus ? 'Waiting for Ticket Record...' : 'Preparing Gate Token Print...'}
+                </h3>
+                <p className="text-xs text-neutral-300 mt-1">
+                  {retryStatus
+                    ? `Ticket record not found yet. Retrying API fetch (${retryStatus.attempt}/${PRINT_FETCH_MAX_RETRIES}) while database propagates...`
+                    : 'Fetching latest ticket record from server...'}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={onClose}
+                className="app-btn mt-2 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border border-neutral-700"
+              >
+                <X className="w-4 h-4 shrink-0" />
+                <span>Cancel</span>
+              </button>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-4">
+              <div className="flex items-start gap-3">
+                <div className="w-10 h-10 rounded-full bg-red-500/20 border border-red-400/40 flex items-center justify-center shrink-0">
+                  <AlertTriangle className="w-5 h-5 text-red-400" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">Unable to Load Ticket</h3>
+                  <p className="text-xs text-red-300 mt-1">
+                    {fetchError || 'Ticket record not found.'}
+                  </p>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center justify-end gap-2 pt-2 border-t border-neutral-800">
+                {ticket && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFetchError(null);
+                      setResolvedTicket(ticket);
+                    }}
+                    className="app-btn bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border border-neutral-700"
+                  >
+                    <Printer className="w-4 h-4 shrink-0" />
+                    <span>Print Local Copy</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setFetchTrigger((n) => n + 1)}
+                  className="app-btn bg-indigo-600 hover:bg-indigo-500 text-white"
+                >
+                  <RefreshCw className="w-4 h-4 shrink-0" />
+                  <span>Retry</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="app-btn bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border border-neutral-700"
+                >
+                  <X className="w-4 h-4 shrink-0" />
+                  <span>Close</span>
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>,
+      document.body
+    );
+  }
+
+  const activeTicket = resolvedTicket;
 
   return createPortal(
     <div className="ticket-print-root fixed inset-0 z-50 overflow-y-auto bg-black/75 flex items-center justify-center p-4">
@@ -125,9 +290,9 @@ export const TicketPrintView: React.FC<TicketPrintViewProps> = ({
         {/* Big Ticket and Gate Box */}
         <div className="my-3 text-center bg-gray-100 p-2.5 rounded-lg border border-black/40">
           <p className="text-[11px] font-bold text-gray-600 uppercase">Assigned Loading Gate</p>
-          <p className="text-3xl font-black text-blue-900 tracking-tight my-0.5">{ticket.gateNumber}</p>
+          <p className="text-3xl font-black text-blue-900 tracking-tight my-0.5">{activeTicket.gateNumber}</p>
           <div className="inline-block bg-blue-900 text-white font-black text-xs px-2.5 py-0.5 rounded-full">
-            Position at Gate: #{ticket.gateSequenceNumber}
+            Position at Gate: #{activeTicket.gateSequenceNumber}
           </div>
         </div>
 
@@ -135,41 +300,41 @@ export const TicketPrintView: React.FC<TicketPrintViewProps> = ({
         <div className="space-y-1.5 text-xs border-y border-black/30 py-2.5">
           <div className="flex justify-between">
             <span className="text-gray-600 font-semibold">Ticket Number:</span>
-            <span className="font-extrabold">{ticket.ticketNumber}</span>
+            <span className="font-extrabold">{activeTicket.ticketNumber}</span>
           </div>
           <div className="flex justify-between">
             <span className="text-gray-600 font-semibold">Daily Overall Seq:</span>
-            <span className="font-extrabold text-indigo-700">#{ticket.sequenceNumber}</span>
+            <span className="font-extrabold text-indigo-700">#{activeTicket.sequenceNumber}</span>
           </div>
           <div className="flex justify-between">
             <span className="text-gray-600 font-semibold">Truck Number:</span>
-            <span className="font-black text-sm tracking-wide">{ticket.truckNumber}</span>
+            <span className="font-black text-sm tracking-wide">{activeTicket.truckNumber}</span>
           </div>
           <div className="flex justify-between">
             <span className="text-gray-600 font-semibold">Driver Name:</span>
-            <span className="font-bold">{ticket.driverName}</span>
+            <span className="font-bold">{activeTicket.driverName}</span>
           </div>
           <div className="flex justify-between">
             <span className="text-gray-600 font-semibold">Driver Mobile:</span>
-            <span className="font-bold font-mono">{formatSaudiPhoneNumber(ticket.driverPhone)}</span>
+            <span className="font-bold font-mono">{formatSaudiPhoneNumber(activeTicket.driverPhone)}</span>
           </div>
-          {ticket.iqamaNumber && (
+          {activeTicket.iqamaNumber && (
             <div className="flex justify-between">
               <span className="text-gray-600 font-semibold">ID / Iqama No:</span>
-              <span className="font-bold font-mono">{ticket.iqamaNumber}</span>
+              <span className="font-bold font-mono">{activeTicket.iqamaNumber}</span>
             </div>
           )}
           <div className="flex justify-between">
             <span className="text-gray-600 font-semibold">Destination Place:</span>
-            <span className="font-bold text-gray-900">{ticket.destinationPlace || 'N/A'}</span>
+            <span className="font-bold text-gray-900">{activeTicket.destinationPlace || 'N/A'}</span>
           </div>
           <div className="flex justify-between">
             <span className="text-gray-600 font-semibold">Date & Time In:</span>
-            <span className="font-medium">{formatDisplayDate(ticket.date)} {ticket.timeIn}</span>
+            <span className="font-medium">{formatDisplayDate(activeTicket.date)} {activeTicket.timeIn}</span>
           </div>
           <div className="flex justify-between">
             <span className="text-gray-600 font-semibold">Transporter:</span>
-            <span className="font-medium truncate max-w-[150px]">{ticket.transporterName || 'Self / Own'}</span>
+            <span className="font-medium truncate max-w-[150px]">{activeTicket.transporterName || 'Self / Own'}</span>
           </div>
         </div>
 
@@ -178,7 +343,7 @@ export const TicketPrintView: React.FC<TicketPrintViewProps> = ({
           <div className="font-mono tracking-widest text-lg font-black select-none">
             ||||| | |||| || |||||| | ||||| |||
           </div>
-          <p className="text-[10px] text-gray-500 font-mono mt-0.5">{ticket.ticketNumber}</p>
+          <p className="text-[10px] text-gray-500 font-mono mt-0.5">{activeTicket.ticketNumber}</p>
         </div>
 
         {/* Notice */}
