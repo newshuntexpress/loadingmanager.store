@@ -266,15 +266,23 @@ export async function saveGateTicketToFirestore(
           return;
         }
 
+        const rawExistingPlant =
+          typeof existingTicketData?.plantId === 'string'
+            ? existingTicketData.plantId.trim().toUpperCase()
+            : '';
         const existingPlant =
           typeof existingTicketData?.plantId === 'string' &&
           /^[A-Z0-9_-]{1,32}$/.test(existingTicketData.plantId)
             ? existingTicketData.plantId
+            : rawExistingPlant && /^[A-Z0-9_-]{1,32}$/.test(rawExistingPlant)
+            ? rawExistingPlant
             : mutableFields.plantId;
         const existingSeqNum = Number(existingTicketData?.sequenceNumber);
         const preservedSeq =
-          Number.isFinite(existingSeqNum) && existingSeqNum >= 0
-            ? Math.round(existingSeqNum)
+          typeof existingTicketData?.sequenceNumber === 'number' &&
+          Number.isFinite(existingSeqNum) &&
+          existingSeqNum >= 0
+            ? existingTicketData.sequenceNumber
             : Math.max(0, Math.round(Number(ticket.sequenceNumber) || 0));
         const existingCreatedAt = existingTicketData?.createdAt;
         const hasValidCreatedAt =
@@ -282,28 +290,51 @@ export async function saveGateTicketToFirestore(
           typeof existingCreatedAt === 'object' &&
           typeof (existingCreatedAt as { toMillis?: unknown }).toMillis === 'function';
 
+        const rawExistingTicketNum = existingTicketData?.ticketNumber;
+        const preservedTicketNumber =
+          typeof rawExistingTicketNum === 'string' &&
+          rawExistingTicketNum.length >= 1 &&
+          rawExistingTicketNum.length <= 64
+            ? rawExistingTicketNum
+            : clampStr(ticket.ticketNumber, 64, ticketId);
+
+        const rawExistingDate = existingTicketData?.date;
+        const preservedDate =
+          typeof rawExistingDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(rawExistingDate)
+            ? rawExistingDate
+            : normalizeDateStr(ticket.date);
+
+        const rawExistingTimeIn = existingTicketData?.timeIn;
+        const preservedTimeIn =
+          typeof rawExistingTimeIn === 'string' && rawExistingTimeIn.length <= 32
+            ? rawExistingTimeIn
+            : clampStr(ticket.timeIn, 32, '00:00:00');
+
+        const rawExistingOwner = existingTicketData?.ownerUid;
+        const preservedOwnerUid =
+          typeof rawExistingOwner === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(rawExistingOwner)
+            ? rawExistingOwner
+            : uid;
+
+        const rawExistingCreatedBy = existingTicketData?.createdBy;
+        const preservedCreatedByEntry =
+          typeof rawExistingCreatedBy === 'string'
+            ? {
+                createdBy:
+                  rawExistingCreatedBy.length <= 120
+                    ? rawExistingCreatedBy
+                    : clampStr(rawExistingCreatedBy, 120),
+              }
+            : {};
+
         const cleanUpdatePayload: Record<string, unknown> = {
           id: ticketId,
-          ticketNumber:
-            typeof existingTicketData?.ticketNumber === 'string' && existingTicketData.ticketNumber.trim()
-              ? clampStr(existingTicketData.ticketNumber, 64)
-              : clampStr(ticket.ticketNumber, 64, ticketId),
+          ticketNumber: preservedTicketNumber,
           sequenceNumber: preservedSeq,
-          date:
-            typeof existingTicketData?.date === 'string' &&
-            /^\d{4}-\d{2}-\d{2}$/.test(existingTicketData.date)
-              ? existingTicketData.date
-              : normalizeDateStr(ticket.date),
-          timeIn:
-            typeof existingTicketData?.timeIn === 'string' && existingTicketData.timeIn.trim()
-              ? clampStr(existingTicketData.timeIn, 32)
-              : clampStr(ticket.timeIn, 32, '00:00:00'),
-          ownerUid: ticketOwnerUid || uid,
-          ...(existingTicketData?.createdBy
-            ? { createdBy: clampStr(existingTicketData.createdBy, 120) }
-            : ticket.createdBy
-            ? { createdBy: clampStr(ticket.createdBy, 120) }
-            : {}),
+          date: preservedDate,
+          timeIn: preservedTimeIn,
+          ownerUid: preservedOwnerUid,
+          ...preservedCreatedByEntry,
           ...mutableFields,
           plantId: existingPlant,
           createdAt: hasValidCreatedAt ? existingCreatedAt : serverTimestamp(),
@@ -1002,25 +1033,37 @@ export async function saveExFactoryEntryToFirestore(entry: ExFactoryEntry): Prom
           return;
         }
         const existingData = snap.data();
+        const rawExPlant =
+          typeof existingData?.plantId === 'string' ? existingData.plantId.trim().toUpperCase() : '';
         const existingPlant =
           typeof existingData?.plantId === 'string' &&
           /^[A-Z0-9_-]{1,32}$/.test(existingData.plantId)
             ? existingData.plantId
+            : rawExPlant && /^[A-Z0-9_-]{1,32}$/.test(rawExPlant)
+            ? rawExPlant
             : mutableFields.plantId;
         const existingCreatedAt = existingData?.createdAt;
         const hasValidCreatedAt =
           Boolean(existingCreatedAt) &&
           typeof existingCreatedAt === 'object' &&
           typeof (existingCreatedAt as { toMillis?: unknown }).toMillis === 'function';
+        const rawExOwner = existingData?.ownerUid;
+        const preservedExOwner =
+          typeof rawExOwner === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(rawExOwner)
+            ? rawExOwner
+            : uid;
 
         currentOp = OperationType.UPDATE;
         tx.set(ref, {
           id: entryId,
-          ownerUid: clampStr(existingData?.ownerUid || uid, 128) || uid,
-          ...(existingData?.createdBy
-            ? { createdBy: clampStr(existingData.createdBy, 120) }
-            : entry.createdBy
-            ? { createdBy: clampStr(entry.createdBy, 120) }
+          ownerUid: preservedExOwner,
+          ...(typeof existingData?.createdBy === 'string'
+            ? {
+                createdBy:
+                  existingData.createdBy.length <= 120
+                    ? existingData.createdBy
+                    : clampStr(existingData.createdBy, 120),
+              }
             : {}),
           ...mutableFields,
           plantId: existingPlant,

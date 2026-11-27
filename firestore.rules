@@ -71,13 +71,38 @@ service cloud.firestore {
       return isEmailVerified() && (isBootstrappedAdmin() || isAdmin() || hasActiveAllowlistDoc());
     }
 
+    function callerAllowlistData() {
+      return get(/databases/$(database)/documents/authorized_emails/$(callerEmailKey())).data;
+    }
+
     function canAccessPlant(plantId) {
       return isAdmin() || (
         hasActiveAllowlistDoc() && (
-          !('allowedPlants' in get(/databases/$(database)/documents/authorized_emails/$(callerEmailKey())).data) ||
-          get(/databases/$(database)/documents/authorized_emails/$(callerEmailKey())).data.allowedPlants.hasAny(['ALL', plantId])
+          !('allowedPlants' in callerAllowlistData()) ||
+          callerAllowlistData().allowedPlants.hasAny(['ALL', plantId.upper()])
         )
       );
+    }
+
+    function canMutateGateTickets() {
+      return isAdmin() || (
+        hasActiveAllowlistDoc() &&
+        (
+          !('roleName' in callerAllowlistData()) ||
+          !(callerAllowlistData().roleName in ['view_only', 'security_guard', 'liquid_store_operator', 'ex_factory_operator'])
+        ) &&
+        (
+          !('permissions' in callerAllowlistData()) ||
+          callerAllowlistData().permissions.hasAny(['tickets.update', 'tickets.create', 'forklift.operate'])
+        )
+      );
+    }
+
+    function isTicketLoadingSlipLocked(data) {
+      return ('loadingSlip' in data) &&
+        (data.loadingSlip is map) &&
+        ('isLocked' in data.loadingSlip) &&
+        data.loadingSlip.isLocked == true;
     }
 
     function isValidRoleName(roleName) {
@@ -694,8 +719,8 @@ service cloud.firestore {
           resource == null ||
           isAdmin() ||
           (
-            (existing().ownerUid == request.auth.uid || existing().isSharedPlant == true) &&
-            canAccessPlant(('plantId' in existing() && existing().plantId is string && existing().plantId != '') ? existing().plantId : 'RIYADH')
+            (existing().ownerUid == request.auth.uid || existing().isSharedPlant == true || !('isSharedPlant' in existing())) &&
+            canAccessPlant(('plantId' in existing() && existing().plantId is string && existing().plantId != '') ? existing().plantId.upper() : 'RIYADH')
           )
         );
 
@@ -703,9 +728,10 @@ service cloud.firestore {
         (resource.data.ownerUid == request.auth.uid || resource.data.isSharedPlant == true);
 
       allow create: if isActiveAllowlisted() &&
+        canMutateGateTickets() &&
         isValidId(ticketId) &&
         isValidGateTicket(incoming(), ticketId) &&
-        canAccessPlant(('plantId' in incoming() && incoming().plantId is string && incoming().plantId != '') ? incoming().plantId : 'RIYADH') &&
+        canAccessPlant(('plantId' in incoming() && incoming().plantId is string && incoming().plantId != '') ? incoming().plantId.upper() : 'RIYADH') &&
         incoming().ownerUid == request.auth.uid &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time;
@@ -713,19 +739,43 @@ service cloud.firestore {
       allow update: if isActiveAllowlisted() &&
         isValidId(ticketId) &&
         isValidGateTicket(incoming(), ticketId) &&
-        canAccessPlant(('plantId' in existing() && existing().plantId is string && existing().plantId != '') ? existing().plantId : 'RIYADH') &&
+        canAccessPlant(('plantId' in existing() && existing().plantId is string && existing().plantId != '') ? existing().plantId.upper() : 'RIYADH') &&
         (!('id' in existing()) || incoming().id == existing().id) &&
-        (!('ownerUid' in existing()) || incoming().ownerUid == existing().ownerUid) &&
-        ((!('createdAt' in existing()) || !(existing().createdAt is timestamp)) && isAdmin() || incoming().createdAt == existing().createdAt) &&
+        ((!('ownerUid' in existing()) || !(existing().ownerUid is string) || !isValidId(existing().ownerUid))
+          ? incoming().ownerUid == request.auth.uid
+          : incoming().ownerUid == existing().ownerUid) &&
+        ((!('createdAt' in existing()) || !(existing().createdAt is timestamp))
+          ? incoming().createdAt == request.time
+          : incoming().createdAt == existing().createdAt) &&
+        (!('ticketNumber' in existing()) || !(existing().ticketNumber is string) || existing().ticketNumber.size() == 0 || existing().ticketNumber.size() > 64 || incoming().ticketNumber == existing().ticketNumber) &&
+        (!('sequenceNumber' in existing()) || !(existing().sequenceNumber is number) || existing().sequenceNumber < 0 || incoming().sequenceNumber == existing().sequenceNumber) &&
+        (!('date' in existing()) || !(existing().date is string) || !existing().date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$') || incoming().date == existing().date) &&
+        (!('timeIn' in existing()) || !(existing().timeIn is string) || existing().timeIn.size() > 32 || incoming().timeIn == existing().timeIn) &&
+        (!('createdBy' in existing()) || !(existing().createdBy is string) || existing().createdBy.size() > 120 || incoming().createdBy == existing().createdBy) &&
         incoming().updatedAt == request.time &&
         (
           isAdmin() ||
           (
-            (existing().ownerUid == request.auth.uid || existing().isSharedPlant == true) &&
-            (!('plantId' in existing()) || !(existing().plantId is string) || existing().plantId == '' || incoming().plantId == existing().plantId) &&
-            existing().status != 'completed' &&
+            canMutateGateTickets() &&
+            (existing().ownerUid == request.auth.uid || existing().isSharedPlant == true || !('isSharedPlant' in existing())) &&
+            (
+              !('plantId' in existing()) ||
+              !(existing().plantId is string) ||
+              existing().plantId == '' ||
+              (!isValidPlantCode(existing().plantId) && incoming().plantId == existing().plantId.upper()) ||
+              incoming().plantId == existing().plantId
+            ) &&
             existing().status != 'cancelled' &&
+            !isTicketLoadingSlipLocked(existing()) &&
             incoming().diff(existing()).affectedKeys().hasOnly([
+              'id',
+              'ownerUid',
+              'ticketNumber',
+              'sequenceNumber',
+              'date',
+              'timeIn',
+              'createdBy',
+              'createdAt',
               'plantId',
               'timeCalled',
               'timeLoadingStarted',
@@ -762,7 +812,7 @@ service cloud.firestore {
         isActiveAllowlisted() &&
         (
           isAdmin() ||
-          (existing().ownerUid == request.auth.uid && canAccessPlant(('plantId' in existing() && existing().plantId is string && existing().plantId != '') ? existing().plantId : 'RIYADH'))
+          (existing().ownerUid == request.auth.uid && canAccessPlant(('plantId' in existing() && existing().plantId is string && existing().plantId != '') ? existing().plantId.upper() : 'RIYADH'))
         );
 
       // Isolated Driver Phone & Iqama PII

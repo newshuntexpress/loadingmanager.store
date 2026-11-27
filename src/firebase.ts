@@ -506,7 +506,11 @@ export async function verifyFirebaseUserAuthorized(
       ? [...ALL_PLANT_PERMISSIONS]
       : [...getDefaultPermissionsForRole(roleName)];
 
-    void syncFirebaseUserProfileToFirestore(fbUser, roleName).catch(() => {});
+    if (roleName === 'admin') {
+      await syncFirebaseUserProfileToFirestore(fbUser, roleName).catch(() => {});
+    } else {
+      void syncFirebaseUserProfileToFirestore(fbUser, roleName).catch(() => {});
+    }
 
     return {
       authorized: true,

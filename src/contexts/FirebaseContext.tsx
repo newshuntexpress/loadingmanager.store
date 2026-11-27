@@ -94,6 +94,11 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const lastPushedMaterialUpdatedAtRef = useRef<Map<string, number>>(new Map());
   const syncSnapshotInFlightRef = useRef<Promise<void> | null>(null);
   const authCheckSeqRef = useRef<number>(0);
+  const isCurrentAdminRef = useRef<boolean>(false);
+  isCurrentAdminRef.current = Boolean(
+    authorizedRecord?.roleName === 'admin' ||
+      firebaseUser?.email?.toLowerCase() === 'newshuntexpress@gmail.com'
+  );
 
   const clearFirebaseAuthError = useCallback(() => {
     setFirebaseAuthError(null);
@@ -305,7 +310,11 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
         // Push any backend records whose backend updatedAt advanced since our last push
         // and is newer than Firestore's copy (guards against container/server clock skew)
+        const isCurrentAdmin = isCurrentAdminRef.current;
         for (const tk of backendTickets) {
+          if (!isCurrentAdmin && (tk.status === 'cancelled' || tk.loadingSlip?.isLocked)) {
+            continue;
+          }
           const backendUpdatedAt = tk.updatedAt || 0;
           const lastPushed = lastPushedTicketUpdatedAtRef.current.get(tk.id) ?? 0;
           const fsUpdatedAt = syncedTicketVersionsRef.current.get(tk.id);
