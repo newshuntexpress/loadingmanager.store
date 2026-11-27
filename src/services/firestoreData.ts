@@ -421,11 +421,27 @@ export async function getGateTicketFromFirestore(ticketId: string): Promise<Tick
   if (!user || !user.emailVerified) return null;
   const cleanId = safeId(ticketId, 'tk');
   try {
+    let targetDocId = cleanId;
+    let docData: Record<string, unknown> | null = null;
     const snap = await getDoc(doc(db, 'gate_tickets', cleanId));
-    if (!snap.exists()) return null;
-    const rec = mapFirestoreDocToTicket(snap.id, snap.data() as Record<string, unknown>);
+    if (snap.exists()) {
+      docData = snap.data() as Record<string, unknown>;
+    } else {
+      const q = query(
+        collection(db, 'gate_tickets'),
+        where('isSharedPlant', '==', true),
+        where('id', '==', ticketId)
+      );
+      const qSnap = await getDocs(q);
+      if (!qSnap.empty) {
+        targetDocId = qSnap.docs[0].id;
+        docData = qSnap.docs[0].data() as Record<string, unknown>;
+      }
+    }
+    if (!docData) return null;
+    const rec = mapFirestoreDocToTicket(targetDocId, docData);
     try {
-      const piiSnap = await getDoc(doc(db, 'gate_tickets', cleanId, 'private', 'driver'));
+      const piiSnap = await getDoc(doc(db, 'gate_tickets', targetDocId, 'private', 'driver'));
       if (piiSnap.exists()) {
         const pii = piiSnap.data();
         if (typeof pii.driverPhone === 'string') rec.driverPhone = pii.driverPhone;

@@ -1531,6 +1531,13 @@ export default function App() {
   const handleSaveLoadingSlip = async (updatedTicket: TicketRecord, openPrintDirectly?: boolean) => {
     setAppError(null);
     setMaterialAutoSaveMsg(null);
+    const existingTicket = tickets.find((t) => t.id === updatedTicket.id);
+    if ((existingTicket?.loadingSlip?.isLocked || updatedTicket.loadingSlip?.isLocked) && openPrintDirectly) {
+      setActiveTicketForSlip(null);
+      setAutoPrintSlip(true);
+      setActiveTicketForPrintSlip(existingTicket || updatedTicket);
+      return;
+    }
     try {
       let response;
       try {
@@ -1561,7 +1568,8 @@ export default function App() {
       const { ticket: saved, whatsappNotification, autoSavedMaterials } = response;
 
       setTickets((prev) => {
-        const next = prev.map((t) => (t.id === saved.id ? saved : t));
+        const exists = prev.some((t) => t.id === saved.id);
+        const next = exists ? prev.map((t) => (t.id === saved.id ? saved : t)) : [saved, ...prev];
         StorageService.saveTickets(next);
         return next;
       });

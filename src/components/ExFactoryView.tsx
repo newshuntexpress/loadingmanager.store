@@ -450,6 +450,18 @@ export const ExFactoryView: React.FC<ExFactoryViewProps> = ({
   ) => {
     if (!activeEntryForSlip || !updatedTicket.loadingSlip) return;
     const targetSrNo = activeEntryForSlip.srNo;
+    if (
+      (activeEntryForSlip.entry.loadingSlip?.isLocked || updatedTicket.loadingSlip.isLocked) &&
+      openPrintDirectly
+    ) {
+      const targetEntry = activeEntryForSlip.entry;
+      setActiveEntryForSlip(null);
+      if (canPrint) {
+        setAutoPrintExSlip(true);
+        setActiveEntryForPrintSlip({ entry: targetEntry, srNo: targetSrNo });
+      }
+      return;
+    }
     try {
       const { entry: updatedEntry, autoSavedMaterials } = await ApiClient.saveExFactoryLoadingSlipWithResult(
         activeEntryForSlip.entry.id,

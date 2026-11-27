@@ -242,6 +242,17 @@ async function resolveStaticTicketById(id: string): Promise<TicketRecord | null>
   return null;
 }
 
+function hasFullTicketPayload(updates: Partial<TicketRecord>): boolean {
+  return Boolean(
+    typeof updates.ticketNumber === 'string' &&
+      updates.ticketNumber.trim() &&
+      typeof updates.truckNumber === 'string' &&
+      updates.truckNumber.trim() &&
+      typeof updates.date === 'string' &&
+      /^\d{4}-\d{2}-\d{2}$/.test(updates.date.trim())
+  );
+}
+
 function getStaticActorName(): string {
   const persisted = getPersistedLoginState().user;
   return (
@@ -600,6 +611,22 @@ async function withStaticFallback<T>(
     staticFirebaseOnlyMode = true;
     return staticFn();
   }
+}
+
+async function withFirestore404Fallback<T>(
+  staticFn: () => Promise<T>,
+  backendFn: () => Promise<T>
+): Promise<T> {
+  return withStaticFallback(staticFn, async () => {
+    try {
+      return await backendFn();
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404 && auth.currentUser?.emailVerified) {
+        return await staticFn();
+      }
+      throw err;
+    }
+  });
 }
 
 export const ApiClient = {
@@ -1257,31 +1284,49 @@ export const ApiClient = {
   },
 
   async updateTicket(id: string, updates: Partial<TicketRecord>): Promise<TicketRecord> {
-    return withStaticFallback(
-      async () => {
-        const existing = await resolveStaticTicketById(id);
-        if (!existing) {
-          throw new ApiError('Ticket record not found.', 404);
-        }
-        const updated: TicketRecord = {
-          ...existing,
-          ...updates,
-          id: existing.id,
-          updatedAt: Date.now(),
-          version: (existing.version || 1) + 1,
-        };
-        await saveGateTicketToFirestore(updated);
-        upsertStaticTicketCache(updated);
-        return updated;
-      },
-      async () => {
-        const res = await request<{ ticket: TicketRecord }>(`/api/tickets/${encodeURIComponent(id)}`, {
-          method: 'PATCH',
-          body: JSON.stringify(updates),
-        });
-        return res.ticket;
+    const updateInFirestore = async (): Promise<TicketRecord> => {
+      const existing = await resolveStaticTicketById(id);
+      if (!existing && !hasFullTicketPayload(updates)) {
+        throw new ApiError('Ticket record not found.', 404);
       }
-    );
+      const now = Date.now();
+      const base: TicketRecord = existing || {
+        id,
+        plantId: updates.plantId || 'RIYADH',
+        ticketNumber: String(updates.ticketNumber || id),
+        sequenceNumber: Number(updates.sequenceNumber) || 1,
+        date: String(updates.date || getTodayDateString()),
+        timeIn: String(updates.timeIn || getCurrentTimeString()),
+        gateNumber: String(updates.gateNumber || 'Gate 1'),
+        gateSequenceNumber: Number(updates.gateSequenceNumber) || 1,
+        truckNumber: String(updates.truckNumber || ''),
+        driverName: String(updates.driverName || 'DRIVER'),
+        driverPhone: String(updates.driverPhone || ''),
+        transporterName: String(updates.transporterName || ''),
+        destinationPlace: String(updates.destinationPlace || ''),
+        status: updates.status || 'waiting',
+        createdAt: typeof updates.createdAt === 'number' ? updates.createdAt : now,
+        updatedAt: now,
+      };
+      const updated: TicketRecord = {
+        ...base,
+        ...updates,
+        id: base.id,
+        updatedAt: now,
+        version: (base.version || 1) + 1,
+      };
+      await saveGateTicketToFirestore(updated);
+      upsertStaticTicketCache(updated);
+      return updated;
+    };
+
+    return withFirestore404Fallback(updateInFirestore, async () => {
+      const res = await request<{ ticket: TicketRecord }>(`/api/tickets/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(updates),
+      });
+      return res.ticket;
+    });
   },
 
   async updateTicketWithNotification(
@@ -1292,15 +1337,48 @@ export const ApiClient = {
     whatsappNotification?: WhatsAppDispatchOutcome;
     autoSavedMaterials?: MaterialMasterRecord[];
   }> {
-    return withStaticFallback(
-      async () => {
-        const ticket = await ApiClient.updateTicket(id, updates);
-        const autoSavedMaterials = await autoSaveSlipMaterialsStatic(updates.loadingSlip?.items);
-        return {
-          ticket,
-          ...(autoSavedMaterials.length > 0 ? { autoSavedMaterials } : {}),
-        };
-      },
+    const updateWithNotificationInFirestore = async () => {
+      const existing = await resolveStaticTicketById(id);
+      if (!existing && !hasFullTicketPayload(updates)) {
+        throw new ApiError('Ticket record not found.', 404);
+      }
+      const now = Date.now();
+      const base: TicketRecord = existing || {
+        id,
+        plantId: updates.plantId || 'RIYADH',
+        ticketNumber: String(updates.ticketNumber || id),
+        sequenceNumber: Number(updates.sequenceNumber) || 1,
+        date: String(updates.date || getTodayDateString()),
+        timeIn: String(updates.timeIn || getCurrentTimeString()),
+        gateNumber: String(updates.gateNumber || 'Gate 1'),
+        gateSequenceNumber: Number(updates.gateSequenceNumber) || 1,
+        truckNumber: String(updates.truckNumber || ''),
+        driverName: String(updates.driverName || 'DRIVER'),
+        driverPhone: String(updates.driverPhone || ''),
+        transporterName: String(updates.transporterName || ''),
+        destinationPlace: String(updates.destinationPlace || ''),
+        status: updates.status || 'waiting',
+        createdAt: typeof updates.createdAt === 'number' ? updates.createdAt : now,
+        updatedAt: now,
+      };
+      const ticket: TicketRecord = {
+        ...base,
+        ...updates,
+        id: base.id,
+        updatedAt: now,
+        version: (base.version || 1) + 1,
+      };
+      await saveGateTicketToFirestore(ticket);
+      upsertStaticTicketCache(ticket);
+      const autoSavedMaterials = await autoSaveSlipMaterialsStatic(updates.loadingSlip?.items);
+      return {
+        ticket,
+        ...(autoSavedMaterials.length > 0 ? { autoSavedMaterials } : {}),
+      };
+    };
+
+    return withFirestore404Fallback(
+      updateWithNotificationInFirestore,
       () =>
         request<{
           ticket: TicketRecord;
@@ -1365,7 +1443,7 @@ export const ApiClient = {
 
   // Forklift Operator Loading
   async openTicketForForklift(ticketId: string): Promise<TicketRecord> {
-    return withStaticFallback(
+    return withFirestore404Fallback(
       async () => {
         const prev = await resolveStaticTicketById(ticketId);
         if (!prev) {
@@ -1420,7 +1498,7 @@ export const ApiClient = {
       version?: number;
     }
   ): Promise<TicketRecord> {
-    return withStaticFallback(
+    return withFirestore404Fallback(
       async () => {
         const prev = await resolveStaticTicketById(ticketId);
         if (!prev) {
@@ -1496,7 +1574,7 @@ export const ApiClient = {
     ticketId: string,
     version?: number
   ): Promise<{ ticket: TicketRecord; alert: LoadingAlertNotification }> {
-    return withStaticFallback(
+    return withFirestore404Fallback(
       async () => {
         const prev = await resolveStaticTicketById(ticketId);
         if (!prev) {
@@ -2162,12 +2240,13 @@ export const ApiClient = {
       iqamaNumber?: string;
     }
   ): Promise<ExFactoryEntry> {
-    return withStaticFallback(
+    return withFirestore404Fallback(
       async () => {
-        if (cacheStaticExFactory.length === 0) {
-          cacheStaticExFactory = await listExFactoryEntriesFromFirestore().catch(() => []);
+        let existing = cacheStaticExFactory.find((e) => e.id === id);
+        if (!existing) {
+          cacheStaticExFactory = await listExFactoryEntriesFromFirestore().catch(() => cacheStaticExFactory);
+          existing = cacheStaticExFactory.find((e) => e.id === id);
         }
-        const existing = cacheStaticExFactory.find((e) => e.id === id);
         if (!existing) {
           throw new ApiError('Ex-Factory entry not found.', 404);
         }
@@ -2241,12 +2320,13 @@ export const ApiClient = {
       mobileNumber?: string;
     }
   ): Promise<{ entry: ExFactoryEntry; autoSavedMaterials?: MaterialMasterRecord[] }> {
-    return withStaticFallback(
+    return withFirestore404Fallback(
       async () => {
-        if (cacheStaticExFactory.length === 0) {
-          cacheStaticExFactory = await listExFactoryEntriesFromFirestore().catch(() => []);
+        let existing = cacheStaticExFactory.find((e) => e.id === id);
+        if (!existing) {
+          cacheStaticExFactory = await listExFactoryEntriesFromFirestore().catch(() => cacheStaticExFactory);
+          existing = cacheStaticExFactory.find((e) => e.id === id);
         }
-        const existing = cacheStaticExFactory.find((e) => e.id === id);
         if (!existing) {
           throw new ApiError('Ex-Factory entry not found.', 404);
         }

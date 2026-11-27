@@ -2175,6 +2175,7 @@ app.get(
         }
         return normalizeTicketRecord({
           ...parsed,
+          id: r.id,
           plantId,
           version: r.version,
           createdBy: r.created_by || undefined,
