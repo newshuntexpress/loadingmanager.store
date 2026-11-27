@@ -1,5 +1,6 @@
 import {
   TicketRecord,
+  TruckStatus,
   TruckLoadingType,
   DriverMasterRecord,
   MaterialMasterRecord,
@@ -33,14 +34,26 @@ import {
   syncAuthorizedUserToFirestore,
   verifyFirebaseUserAuthorized,
 } from '../firebase';
-import { DEFAULT_SETTINGS, mergeSettingsWithDefaults, StorageService } from './storage';
 import {
+  DEFAULT_SETTINGS,
+  getCurrentTimeString,
+  getTodayDateString,
+  mergeSettingsWithDefaults,
+  StorageService,
+} from './storage';
+import {
+  deleteExFactoryEntryFromFirestore,
   deleteGateTicketFromFirestore,
   deleteMaterialFromFirestore,
+  getGateTicketFromFirestore,
   getPlantSettingsFromFirestore,
   importMaterialsBatchToFirestore,
   listAuditLogsFromFirestore,
   listAuthorizedUsersFromFirestore,
+  listExFactoryEntriesFromFirestore,
+  listGateTicketsFromFirestore,
+  listMaterialsFromFirestore,
+  saveExFactoryEntryToFirestore,
   saveGateTicketToFirestore,
   saveMaterialToFirestore,
   savePlantSettingsToFirestore,
@@ -207,6 +220,90 @@ export function isStaticFirebaseOnlyMode(): boolean {
 
 const STATIC_SETTINGS_STORAGE_KEY = 'gp_static_company_settings_v1';
 const STATIC_DRIVERS_STORAGE_KEY = 'gp_static_drivers_v1';
+let cacheStaticExFactory: ExFactoryEntry[] = [];
+
+function upsertStaticTicketCache(updated: TicketRecord): void {
+  const current = StorageService.getTickets();
+  const exists = current.some((t) => t.id === updated.id);
+  const next = exists
+    ? current.map((t) => (t.id === updated.id ? updated : t))
+    : [updated, ...current];
+  StorageService.saveTickets(next);
+}
+
+async function resolveStaticTicketById(id: string): Promise<TicketRecord | null> {
+  const cached = StorageService.getTickets().find((t) => t.id === id);
+  if (cached) return cached;
+  const remote = await getGateTicketFromFirestore(id).catch(() => null);
+  if (remote) {
+    upsertStaticTicketCache(remote);
+    return remote;
+  }
+  return null;
+}
+
+function getStaticActorName(): string {
+  const persisted = getPersistedLoginState().user;
+  return (
+    persisted?.fullName ||
+    auth.currentUser?.displayName ||
+    persisted?.username ||
+    auth.currentUser?.email?.split('@')[0] ||
+    'Operator'
+  );
+}
+
+function getStaticActorUsername(): string {
+  const persisted = getPersistedLoginState().user;
+  return (
+    persisted?.username ||
+    auth.currentUser?.email?.split('@')[0] ||
+    persisted?.fullName ||
+    'user'
+  );
+}
+
+async function autoSaveSlipMaterialsStatic(
+  slipItems?: LoadingSlipData['items']
+): Promise<MaterialMasterRecord[]> {
+  if (!Array.isArray(slipItems) || slipItems.length === 0) return [];
+  let existingMaterials = StorageService.getMaterials();
+  if (existingMaterials.length === 0) {
+    existingMaterials = await listMaterialsFromFirestore().catch(() => existingMaterials);
+    if (existingMaterials.length > 0) {
+      StorageService.saveMaterials(existingMaterials);
+    }
+  }
+  const existingNames = new Set(
+    existingMaterials.map((m) => m.materialName.trim().toUpperCase())
+  );
+  const now = Date.now();
+  const createdList: MaterialMasterRecord[] = [];
+  slipItems.forEach((item, idx) => {
+    const cleanName = String(item?.description || '').trim().toUpperCase();
+    if (!cleanName || existingNames.has(cleanName)) return;
+    existingNames.add(cleanName);
+    const parsedRatio = Number(item?.palletRatio);
+    const palletRatio =
+      Number.isFinite(parsedRatio) && parsedRatio > 0 && parsedRatio <= 10000
+        ? Math.round(parsedRatio)
+        : 23;
+    createdList.push({
+      id: `mat_${now}_${idx}_${Math.random().toString(36).slice(2, 6)}`,
+      materialName: cleanName,
+      packType: String(item?.pack || '').trim() || 'Rolls',
+      palletRatio,
+      remarks: String(item?.remarks || '').trim().toUpperCase(),
+      createdAt: now,
+      updatedAt: now,
+    });
+  });
+  if (createdList.length > 0) {
+    StorageService.mergeMaterialsCache(createdList);
+    await importMaterialsBatchToFirestore(createdList).catch(() => {});
+  }
+  return createdList;
+}
 
 function readStaticSettings(): CompanySettings {
   try {
@@ -1098,11 +1195,33 @@ export const ApiClient = {
   async getTickets(plantId?: string): Promise<TicketRecord[]> {
     return withStaticFallback(
       async () => {
-        const all = StorageService.getTickets();
-        if (plantId && plantId !== 'ALL') {
-          return all.filter((t) => (t.plantId || 'RIYADH').toUpperCase() === plantId.toUpperCase());
+        const cached = StorageService.getTickets();
+        const cachedById = new Map(cached.map((t) => [t.id, t]));
+        try {
+          const remote = await listGateTicketsFromFirestore(plantId);
+          const merged = remote.map((t) => {
+            const prev = cachedById.get(t.id);
+            return {
+              ...t,
+              driverPhone: t.driverPhone || prev?.driverPhone || '',
+              iqamaNumber: t.iqamaNumber || prev?.iqamaNumber || '',
+              driverStatusToken: prev?.driverStatusToken,
+            };
+          });
+          if (!plantId || plantId === 'ALL') {
+            StorageService.saveTickets(merged);
+          } else {
+            const remoteById = new Map(merged.map((t) => [t.id, t]));
+            const otherPlants = cached.filter((t) => !remoteById.has(t.id));
+            StorageService.saveTickets([...merged, ...otherPlants]);
+          }
+          return merged;
+        } catch {
+          if (plantId && plantId !== 'ALL') {
+            return cached.filter((t) => (t.plantId || 'RIYADH').toUpperCase() === plantId.toUpperCase());
+          }
+          return cached;
         }
-        return all;
       },
       async () => {
         const qs = plantId && plantId !== 'ALL' ? `?plantId=${encodeURIComponent(plantId)}` : '';
@@ -1124,7 +1243,7 @@ export const ApiClient = {
           version: 1,
         };
         await saveGateTicketToFirestore(created);
-        StorageService.saveTickets([created, ...StorageService.getTickets()]);
+        upsertStaticTicketCache(created);
         return created;
       },
       async () => {
@@ -1140,8 +1259,7 @@ export const ApiClient = {
   async updateTicket(id: string, updates: Partial<TicketRecord>): Promise<TicketRecord> {
     return withStaticFallback(
       async () => {
-        const current = StorageService.getTickets();
-        const existing = current.find((t) => t.id === id);
+        const existing = await resolveStaticTicketById(id);
         if (!existing) {
           throw new ApiError('Ticket record not found.', 404);
         }
@@ -1153,7 +1271,7 @@ export const ApiClient = {
           version: (existing.version || 1) + 1,
         };
         await saveGateTicketToFirestore(updated);
-        StorageService.saveTickets(current.map((t) => (t.id === id ? updated : t)));
+        upsertStaticTicketCache(updated);
         return updated;
       },
       async () => {
@@ -1177,40 +1295,7 @@ export const ApiClient = {
     return withStaticFallback(
       async () => {
         const ticket = await ApiClient.updateTicket(id, updates);
-        const slipItems = updates.loadingSlip?.items;
-        let autoSavedMaterials: MaterialMasterRecord[] = [];
-        if (Array.isArray(slipItems) && slipItems.length > 0) {
-          const existingMaterials = StorageService.getMaterials();
-          const existingNames = new Set(
-            existingMaterials.map((m) => m.materialName.trim().toUpperCase())
-          );
-          const now = Date.now();
-          const createdList: MaterialMasterRecord[] = [];
-          slipItems.forEach((item, idx) => {
-            const cleanName = String(item?.description || '').trim().toUpperCase();
-            if (!cleanName || existingNames.has(cleanName)) return;
-            existingNames.add(cleanName);
-            const parsedRatio = Number(item?.palletRatio);
-            const palletRatio =
-              Number.isFinite(parsedRatio) && parsedRatio > 0 && parsedRatio <= 10000
-                ? Math.round(parsedRatio)
-                : 23;
-            createdList.push({
-              id: `mat_${now}_${idx}_${Math.random().toString(36).slice(2, 6)}`,
-              materialName: cleanName,
-              packType: String(item?.pack || '').trim() || 'Rolls',
-              palletRatio,
-              remarks: String(item?.remarks || '').trim().toUpperCase(),
-              createdAt: now,
-              updatedAt: now,
-            });
-          });
-          if (createdList.length > 0) {
-            StorageService.mergeMaterialsCache(createdList);
-            await importMaterialsBatchToFirestore(createdList).catch(() => {});
-            autoSavedMaterials = createdList;
-          }
-        }
+        const autoSavedMaterials = await autoSaveSlipMaterialsStatic(updates.loadingSlip?.items);
         return {
           ticket,
           ...(autoSavedMaterials.length > 0 ? { autoSavedMaterials } : {}),
@@ -1280,10 +1365,47 @@ export const ApiClient = {
 
   // Forklift Operator Loading
   async openTicketForForklift(ticketId: string): Promise<TicketRecord> {
-    const res = await request<{ ticket: TicketRecord }>(`/api/tickets/${encodeURIComponent(ticketId)}/forklift/open`, {
-      method: 'POST',
-    });
-    return res.ticket;
+    return withStaticFallback(
+      async () => {
+        const prev = await resolveStaticTicketById(ticketId);
+        if (!prev) {
+          throw new ApiError('Ticket record not found.', 404);
+        }
+        if (
+          prev.loadingSlip?.isLocked ||
+          prev.status === 'completed' ||
+          prev.status === 'cancelled' ||
+          prev.status === 'under_loading'
+        ) {
+          return prev;
+        }
+        const operatorName = getStaticActorName();
+        const nextSlip = prev.loadingSlip
+          ? {
+              ...prev.loadingSlip,
+              checkedBy: prev.loadingSlip.checkedBy || operatorName,
+            }
+          : undefined;
+        const updated: TicketRecord = {
+          ...prev,
+          ...(nextSlip ? { loadingSlip: nextSlip } : {}),
+          status: 'under_loading',
+          timeLoadingStarted: prev.timeLoadingStarted || getCurrentTimeString(),
+          updatedAt: Date.now(),
+          updatedBy: getStaticActorUsername(),
+          version: (prev.version || 1) + 1,
+        };
+        await saveGateTicketToFirestore(updated);
+        upsertStaticTicketCache(updated);
+        return updated;
+      },
+      async () => {
+        const res = await request<{ ticket: TicketRecord }>(`/api/tickets/${encodeURIComponent(ticketId)}/forklift/open`, {
+          method: 'POST',
+        });
+        return res.ticket;
+      }
+    );
   },
 
   async updateForkliftChecklist(
@@ -1298,26 +1420,154 @@ export const ApiClient = {
       version?: number;
     }
   ): Promise<TicketRecord> {
-    const res = await request<{ ticket: TicketRecord }>(
-      `/api/tickets/${encodeURIComponent(ticketId)}/forklift/checklist`,
-      {
-        method: 'PATCH',
-        body: JSON.stringify(payload),
+    return withStaticFallback(
+      async () => {
+        const prev = await resolveStaticTicketById(ticketId);
+        if (!prev) {
+          throw new ApiError('Ticket record not found.', 404);
+        }
+        if (prev.loadingSlip?.isLocked || prev.status === 'completed') {
+          throw new ApiError('This loading slip is locked because loading has already been completed.', 409);
+        }
+        if (!prev.loadingSlip || !Array.isArray(prev.loadingSlip.items)) {
+          throw new ApiError('No Loading Slip materials have been prepared for this ticket yet.', 400);
+        }
+        const now = Date.now();
+        const operatorName = getStaticActorName();
+        const nextItems = prev.loadingSlip.items.map((item) => ({ ...item }));
+        for (const upd of payload.itemUpdates || []) {
+          const idx = Number(upd?.index);
+          if (!Number.isInteger(idx) || idx < 0 || idx >= nextItems.length) continue;
+          const target = nextItems[idx];
+          if (typeof upd.isLoaded === 'boolean') {
+            target.isLoaded = upd.isLoaded;
+            if (upd.isLoaded) {
+              target.loadedAt = now;
+              target.loadedByName = operatorName;
+              if ((target.loadedQty === undefined || target.loadedQty === '') && target.qty) {
+                target.loadedQty = String(target.qty).trim().toUpperCase();
+              }
+            } else {
+              target.loadedAt = undefined;
+              target.loadedByName = undefined;
+            }
+          }
+          if (typeof upd.loadedQty === 'string') {
+            target.loadedQty = upd.loadedQty.trim().toUpperCase().slice(0, 60);
+          }
+          if (typeof upd.remarks === 'string') {
+            target.remarks = upd.remarks.trim().toUpperCase().slice(0, 120);
+          }
+        }
+        const nextStatus: TruckStatus =
+          prev.status === 'waiting' || prev.status === 'called' ? 'under_loading' : prev.status;
+        const updated: TicketRecord = {
+          ...prev,
+          status: nextStatus,
+          timeLoadingStarted: prev.timeLoadingStarted || getCurrentTimeString(),
+          loadingSlip: {
+            ...prev.loadingSlip,
+            items: nextItems,
+            checkedBy: prev.loadingSlip.checkedBy || operatorName,
+            loadedBy: operatorName,
+          },
+          updatedBy: getStaticActorUsername(),
+          updatedAt: now,
+          version: (prev.version || 1) + 1,
+        };
+        await saveGateTicketToFirestore(updated);
+        upsertStaticTicketCache(updated);
+        return updated;
+      },
+      async () => {
+        const res = await request<{ ticket: TicketRecord }>(
+          `/api/tickets/${encodeURIComponent(ticketId)}/forklift/checklist`,
+          {
+            method: 'PATCH',
+            body: JSON.stringify(payload),
+          }
+        );
+        return res.ticket;
       }
     );
-    return res.ticket;
   },
 
   async completeForkliftLoading(
     ticketId: string,
     version?: number
   ): Promise<{ ticket: TicketRecord; alert: LoadingAlertNotification }> {
-    return request<{ ticket: TicketRecord; alert: LoadingAlertNotification }>(
-      `/api/tickets/${encodeURIComponent(ticketId)}/forklift/complete`,
-      {
-        method: 'POST',
-        body: JSON.stringify({ version }),
-      }
+    return withStaticFallback(
+      async () => {
+        const prev = await resolveStaticTicketById(ticketId);
+        if (!prev) {
+          throw new ApiError('Ticket record not found.', 404);
+        }
+        if (prev.loadingSlip?.isLocked || prev.status === 'completed') {
+          throw new ApiError('Loading is already completed and locked for this ticket.', 409);
+        }
+        const items = Array.isArray(prev.loadingSlip?.items) ? prev.loadingSlip!.items : [];
+        const activeItems = items.filter(
+          (it) =>
+            String(it?.description || '').trim() ||
+            String(it?.qty || '').trim() ||
+            String(it?.pack || '').trim()
+        );
+        if (activeItems.length === 0) {
+          throw new ApiError('Cannot complete loading: no active materials are listed on this Loading Slip.', 400);
+        }
+        const pendingCount = activeItems.filter((it) => it.isLoaded !== true).length;
+        if (pendingCount > 0) {
+          throw new ApiError(
+            `All materials must be checked/completed before clicking Loading Complete (${pendingCount} pending).`,
+            400
+          );
+        }
+        const now = Date.now();
+        const operatorName = getStaticActorName();
+        const completedTime = getCurrentTimeString();
+        const completedDateTime = `${getTodayDateString()} ${completedTime}`;
+        const updated: TicketRecord = {
+          ...prev,
+          status: 'completed',
+          timeLoadingStarted: prev.timeLoadingStarted || completedTime,
+          timeCompleted: completedTime,
+          loadingSlip: {
+            ...prev.loadingSlip!,
+            checkedBy: operatorName,
+            loadedBy: operatorName,
+            isLocked: true,
+            loadingCompletedAt: now,
+            loadingCompletedTime: completedDateTime,
+            loadingCompletedBy: operatorName,
+          },
+          updatedBy: getStaticActorUsername(),
+          updatedAt: now,
+          version: (prev.version || 1) + 1,
+        };
+        await saveGateTicketToFirestore(updated);
+        upsertStaticTicketCache(updated);
+        const alert: LoadingAlertNotification = {
+          id: `alert_${now}`,
+          plantId: updated.plantId || 'RIYADH',
+          ticketId: updated.id,
+          ticketNumber: updated.ticketNumber,
+          delNoteNumber: updated.loadingSlip?.delNoteNumber || updated.delNoteNumber || '',
+          truckNumber: updated.truckNumber,
+          gateNumber: updated.gateNumber,
+          completedBy: operatorName,
+          completedTime: completedDateTime,
+          createdAt: now,
+        };
+        return { ticket: updated, alert };
+      },
+      () =>
+        request<{ ticket: TicketRecord; alert: LoadingAlertNotification }>(
+          `/api/tickets/${encodeURIComponent(ticketId)}/forklift/complete`,
+          {
+            method: 'POST',
+            body: JSON.stringify({ version }),
+          }
+        )
     );
   },
 
@@ -1406,7 +1656,15 @@ export const ApiClient = {
   // Material Master
   async getMaterials(): Promise<MaterialMasterRecord[]> {
     return withStaticFallback(
-      async () => StorageService.getMaterials(),
+      async () => {
+        try {
+          const list = await listMaterialsFromFirestore();
+          StorageService.saveMaterials(list);
+          return list;
+        } catch {
+          return StorageService.getMaterials();
+        }
+      },
       async () => {
         const res = await request<{ materials: MaterialMasterRecord[] }>('/api/materials');
         return Array.isArray(res?.materials) ? res.materials : [];
@@ -1824,9 +2082,18 @@ export const ApiClient = {
 
   // Ex-Factory Dispatch Entries (plant-scoped)
   async getExFactoryEntries(plantId?: string): Promise<ExFactoryEntry[]> {
-    const qs = plantId && plantId !== 'ALL' ? `?plantId=${encodeURIComponent(plantId)}` : '';
-    const res = await request<{ entries: ExFactoryEntry[] }>(`/api/ex-factory${qs}`);
-    return res.entries;
+    return withStaticFallback(
+      async () => {
+        const entries = await listExFactoryEntriesFromFirestore(plantId);
+        cacheStaticExFactory = entries;
+        return entries;
+      },
+      async () => {
+        const qs = plantId && plantId !== 'ALL' ? `?plantId=${encodeURIComponent(plantId)}` : '';
+        const res = await request<{ entries: ExFactoryEntry[] }>(`/api/ex-factory${qs}`);
+        return res.entries;
+      }
+    );
   },
 
   async createExFactoryEntry(payload: {
@@ -1840,11 +2107,45 @@ export const ApiClient = {
     mobileNumber?: string;
     iqamaNumber?: string;
   }): Promise<ExFactoryEntry> {
-    const res = await request<{ entry: ExFactoryEntry }>('/api/ex-factory', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    });
-    return res.entry;
+    return withStaticFallback(
+      async () => {
+        const delNoteNumber = payload.delNoteNumber.trim().toUpperCase();
+        const customerName = payload.customerName.trim().toUpperCase();
+        const truckNumber = payload.truckNumber.trim().toUpperCase();
+        if (!delNoteNumber || !customerName || !truckNumber) {
+          throw new ApiError('Del Note No., Customer Name, and Truck No. are required.', 400);
+        }
+        const now = Date.now();
+        const actor = getStaticActorUsername();
+        const rawDate = String(payload.entryDate || '').trim();
+        const entry: ExFactoryEntry = {
+          id: `exf_${now}_${Math.random().toString(36).slice(2, 7)}`,
+          plantId: (payload.plantId || 'RIYADH').trim().toUpperCase() || 'RIYADH',
+          entryDate: /^\d{4}-\d{2}-\d{2}$/.test(rawDate) ? rawDate : getTodayDateString(),
+          delNoteNumber,
+          customerName,
+          loadingType: payload.loadingType || 'local',
+          truckNumber,
+          driverName: (payload.driverName || '').trim().toUpperCase(),
+          mobileNumber: (payload.mobileNumber || '').trim().toUpperCase(),
+          iqamaNumber: (payload.iqamaNumber || '').trim().toUpperCase(),
+          createdBy: actor,
+          updatedBy: actor,
+          createdAt: now,
+          updatedAt: now,
+        };
+        await saveExFactoryEntryToFirestore(entry);
+        cacheStaticExFactory = [entry, ...cacheStaticExFactory.filter((e) => e.id !== entry.id)];
+        return entry;
+      },
+      async () => {
+        const res = await request<{ entry: ExFactoryEntry }>('/api/ex-factory', {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        });
+        return res.entry;
+      }
+    );
   },
 
   async updateExFactoryEntry(
@@ -1861,17 +2162,61 @@ export const ApiClient = {
       iqamaNumber?: string;
     }
   ): Promise<ExFactoryEntry> {
-    const res = await request<{ entry: ExFactoryEntry }>(`/api/ex-factory/${encodeURIComponent(id)}`, {
-      method: 'PUT',
-      body: JSON.stringify(payload),
-    });
-    return res.entry;
+    return withStaticFallback(
+      async () => {
+        if (cacheStaticExFactory.length === 0) {
+          cacheStaticExFactory = await listExFactoryEntriesFromFirestore().catch(() => []);
+        }
+        const existing = cacheStaticExFactory.find((e) => e.id === id);
+        if (!existing) {
+          throw new ApiError('Ex-Factory entry not found.', 404);
+        }
+        const delNoteNumber = payload.delNoteNumber.trim().toUpperCase();
+        const customerName = payload.customerName.trim().toUpperCase();
+        const truckNumber = payload.truckNumber.trim().toUpperCase();
+        if (!delNoteNumber || !customerName || !truckNumber) {
+          throw new ApiError('Del Note No., Customer Name, and Truck No. are required.', 400);
+        }
+        const rawDate = String(payload.entryDate || '').trim();
+        const updated: ExFactoryEntry = {
+          ...existing,
+          entryDate: /^\d{4}-\d{2}-\d{2}$/.test(rawDate) ? rawDate : existing.entryDate,
+          delNoteNumber,
+          customerName,
+          loadingType: payload.loadingType || existing.loadingType || 'local',
+          truckNumber,
+          driverName: (payload.driverName || '').trim().toUpperCase(),
+          mobileNumber: (payload.mobileNumber || '').trim().toUpperCase(),
+          iqamaNumber: (payload.iqamaNumber || '').trim().toUpperCase(),
+          updatedBy: getStaticActorUsername(),
+          updatedAt: Date.now(),
+        };
+        await saveExFactoryEntryToFirestore(updated);
+        cacheStaticExFactory = cacheStaticExFactory.map((e) => (e.id === id ? updated : e));
+        return updated;
+      },
+      async () => {
+        const res = await request<{ entry: ExFactoryEntry }>(`/api/ex-factory/${encodeURIComponent(id)}`, {
+          method: 'PUT',
+          body: JSON.stringify(payload),
+        });
+        return res.entry;
+      }
+    );
   },
 
   async deleteExFactoryEntry(id: string): Promise<void> {
-    await request(`/api/ex-factory/${encodeURIComponent(id)}`, {
-      method: 'DELETE',
-    });
+    return withStaticFallback(
+      async () => {
+        await deleteExFactoryEntryFromFirestore(id);
+        cacheStaticExFactory = cacheStaticExFactory.filter((e) => e.id !== id);
+      },
+      async () => {
+        await request(`/api/ex-factory/${encodeURIComponent(id)}`, {
+          method: 'DELETE',
+        });
+      }
+    );
   },
 
   async saveExFactoryLoadingSlip(
@@ -1896,12 +2241,66 @@ export const ApiClient = {
       mobileNumber?: string;
     }
   ): Promise<{ entry: ExFactoryEntry; autoSavedMaterials?: MaterialMasterRecord[] }> {
-    return request<{ entry: ExFactoryEntry; autoSavedMaterials?: MaterialMasterRecord[] }>(
-      `/api/ex-factory/${encodeURIComponent(id)}/loading-slip`,
-      {
-        method: 'PUT',
-        body: JSON.stringify(payload),
-      }
+    return withStaticFallback(
+      async () => {
+        if (cacheStaticExFactory.length === 0) {
+          cacheStaticExFactory = await listExFactoryEntriesFromFirestore().catch(() => []);
+        }
+        const existing = cacheStaticExFactory.find((e) => e.id === id);
+        if (!existing) {
+          throw new ApiError('Ex-Factory entry not found.', 404);
+        }
+        const persistedUser = getPersistedLoginState().user;
+        const actorName = getStaticActorName();
+        const slipDelNote = (payload.loadingSlip.delNoteNumber || existing.delNoteNumber).trim().toUpperCase();
+        const slipPlace = (payload.loadingSlip.placeName || '').trim().toUpperCase();
+        if (!slipDelNote || !slipPlace) {
+          throw new ApiError('Delivery Note Number and Destination Place are required on loading slip.', 400);
+        }
+        const updatedSlip: LoadingSlipData = {
+          ...payload.loadingSlip,
+          delNoteNumber: slipDelNote,
+          placeName: slipPlace,
+          storeInchargeUserId: payload.loadingSlip.storeInchargeUserId || persistedUser?.id || auth.currentUser?.uid,
+          storeInchargeName: payload.loadingSlip.storeInchargeName || actorName,
+          storeInchargeSignatureDataUrl:
+            payload.loadingSlip.storeInchargeSignatureDataUrl || persistedUser?.signatureDataUrl || '',
+        };
+        const updated: ExFactoryEntry = {
+          ...existing,
+          delNoteNumber: slipDelNote,
+          truckNumber:
+            payload.truckNumber !== undefined
+              ? payload.truckNumber.trim().toUpperCase() || existing.truckNumber
+              : existing.truckNumber,
+          driverName:
+            payload.driverName !== undefined
+              ? payload.driverName.trim().toUpperCase()
+              : existing.driverName,
+          mobileNumber:
+            payload.mobileNumber !== undefined
+              ? payload.mobileNumber.trim().toUpperCase()
+              : existing.mobileNumber,
+          loadingSlip: updatedSlip,
+          updatedBy: getStaticActorUsername(),
+          updatedAt: Date.now(),
+        };
+        await saveExFactoryEntryToFirestore(updated);
+        cacheStaticExFactory = cacheStaticExFactory.map((e) => (e.id === id ? updated : e));
+        const autoSavedMaterials = await autoSaveSlipMaterialsStatic(updatedSlip.items);
+        return {
+          entry: updated,
+          ...(autoSavedMaterials.length > 0 ? { autoSavedMaterials } : {}),
+        };
+      },
+      () =>
+        request<{ entry: ExFactoryEntry; autoSavedMaterials?: MaterialMasterRecord[] }>(
+          `/api/ex-factory/${encodeURIComponent(id)}/loading-slip`,
+          {
+            method: 'PUT',
+            body: JSON.stringify(payload),
+          }
+        )
     );
   },
 };

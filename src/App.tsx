@@ -455,7 +455,13 @@ export default function App() {
   const canDeleteTickets =
     !isForkliftRole && !isLiquidStoreRole && !isExFactoryRole && !isSecurityGuardRole && hasPerm('tickets.delete');
   const canPrintSlips =
-    !isForkliftRole && !isLiquidStoreRole && !isExFactoryRole && !isSecurityGuardRole && hasPerm('slips.print');
+    !isLiquidStoreRole &&
+    !isSecurityGuardRole &&
+    (isAdmin ||
+      isForkliftRole ||
+      isExFactoryRole ||
+      currentUser?.roleName === 'view_only' ||
+      hasPerm('slips.print'));
   const canManageDrivers =
     !isForkliftRole && !isLiquidStoreRole && !isExFactoryRole && !isSecurityGuardRole && hasPerm('drivers.manage');
   const canViewReports =
@@ -497,7 +503,6 @@ export default function App() {
     canCreateTickets ||
     canUpdateTickets ||
     canDeleteTickets ||
-    canPrintSlips ||
     canManageDrivers ||
     canViewReports ||
     canManageSettings ||
@@ -813,7 +818,6 @@ export default function App() {
       setSelectedDate(getTodayDateString());
       setShowNewTicketModal(false);
       setActiveTicketForSlip(null);
-      setActiveTicketForPrintSlip(null);
       setActiveTicketForPrintTicket(null);
       setActiveTicketForWhatsApp(null);
       setShowDriverMasterModal(false);
@@ -974,7 +978,7 @@ export default function App() {
 
     setTickets((prev) => {
       const prevById = new Map(prev.map((t) => [t.id, t]));
-      return firestoreTickets.map((fsTicket) => {
+      const merged = firestoreTickets.map((fsTicket) => {
         const existing = prevById.get(fsTicket.id);
         return {
           ...fsTicket,
@@ -983,6 +987,8 @@ export default function App() {
           driverStatusToken: existing?.driverStatusToken,
         };
       });
+      StorageService.saveTickets(merged);
+      return merged;
     });
   }, [currentUser, isFirestoreActive, firestoreSyncReady, firestoreTickets]);
 
@@ -1352,7 +1358,7 @@ export default function App() {
         timeCalled: getCurrentTimeString(),
         version: ticket.version,
       });
-      if (isFirestoreActive) void saveTicketToFirestore(updated);
+      if (isFirestoreActive && !isStaticFirebaseOnlyMode()) void saveTicketToFirestore(updated);
       await loadData();
       setActiveTicketForWhatsApp({ ticket: updated, templateId: 'gate_call' });
     } catch (err: any) {
@@ -1370,7 +1376,7 @@ export default function App() {
         timeLoadingStarted: getCurrentTimeString(),
         version: ticket.version,
       });
-      if (isFirestoreActive) void saveTicketToFirestore(updated);
+      if (isFirestoreActive && !isStaticFirebaseOnlyMode()) void saveTicketToFirestore(updated);
       await loadData();
       setActiveTicketForWhatsApp({ ticket: updated, templateId: 'under_loading' });
     } catch (err: any) {
@@ -1393,7 +1399,7 @@ export default function App() {
         timeCompleted: getCurrentTimeString(),
         version: ticket.version,
       });
-      if (isFirestoreActive) void saveTicketToFirestore(updated);
+      if (isFirestoreActive && !isStaticFirebaseOnlyMode()) void saveTicketToFirestore(updated);
       await loadData();
       setActiveTicketForWhatsApp({ ticket: updated, templateId: 'completed_dispatch' });
     } catch (err: any) {
@@ -1417,7 +1423,7 @@ export default function App() {
     setAppError(null);
     try {
       const updated = await ApiClient.updateTicket(ticket.id, updates);
-      if (isFirestoreActive) void saveTicketToFirestore(updated);
+      if (isFirestoreActive && !isStaticFirebaseOnlyMode()) void saveTicketToFirestore(updated);
       await loadData();
     } catch (err: any) {
       await loadData();
@@ -1436,7 +1442,7 @@ export default function App() {
         gateNumber: cleanGate,
         version: ticket.version,
       });
-      if (isFirestoreActive) void saveTicketToFirestore(updated);
+      if (isFirestoreActive && !isStaticFirebaseOnlyMode()) void saveTicketToFirestore(updated);
       await loadData();
     } catch (err: any) {
       await loadData();
@@ -1668,7 +1674,7 @@ export default function App() {
     setAppError(null);
     try {
       await ApiClient.deleteTicket(id);
-      if (isFirestoreActive) await removeTicketFromFirestore(id);
+      if (isFirestoreActive && !isStaticFirebaseOnlyMode()) await removeTicketFromFirestore(id);
       await loadData();
       setDeletedToast({
         ticket: ticketToDelete,
@@ -1685,7 +1691,7 @@ export default function App() {
     setAppError(null);
     try {
       const restored = await ApiClient.restoreTicket(deletedToast.ticket);
-      if (isFirestoreActive) await saveTicketToFirestore(restored);
+      if (isFirestoreActive && !isStaticFirebaseOnlyMode()) await saveTicketToFirestore(restored);
       await loadData();
       setDeletedToast(null);
     } catch (err: any) {
@@ -2948,6 +2954,7 @@ export default function App() {
             onStartLoading={handleStartLoading}
             onCompleteLoading={handleCompleteLoading}
             onOpenLoadingSlip={(t) => setActiveTicketForSlip(t)}
+            onPrintLoadingSlip={(t) => setActiveTicketForPrintSlip(t)}
             onOpenWhatsApp={(t, templateId) => setActiveTicketForWhatsApp({ ticket: t, templateId })}
             canUpdate={canUpdateTickets}
             canPrint={canPrintSlips}
@@ -3034,7 +3041,7 @@ export default function App() {
               canPrint={canPrintSlips}
               onTicketsRefresh={loadData}
               onLoadingCompleted={(updatedTicket, alert) => {
-                if (isFirestoreActive) {
+                if (isFirestoreActive && !isStaticFirebaseOnlyMode()) {
                   void saveTicketToFirestore(updatedTicket);
                 }
                 if (!isForkliftOperator) {
@@ -3086,6 +3093,7 @@ export default function App() {
               canCreate={canCreateExFactory}
               canUpdate={canUpdateExFactory}
               canDelete={canDeleteExFactory}
+              canPrint={canPrintSlips}
             />
           ) : (
             <div className="bg-white border border-amber-200 rounded-2xl p-8 text-center space-y-2 shadow-sm">
@@ -3142,7 +3150,7 @@ export default function App() {
           settings={settings}
           onSave={async (updatedTicket) => {
             setActiveTicketForEdit(null);
-            if (isFirestoreActive) await saveTicketToFirestore(updatedTicket);
+            if (isFirestoreActive && !isStaticFirebaseOnlyMode()) await saveTicketToFirestore(updatedTicket);
             await loadData();
           }}
           onClose={() => setActiveTicketForEdit(null)}
@@ -3164,7 +3172,7 @@ export default function App() {
       )}
 
       {/* 3. 2-Copy A4 Loading Slip Print Preview Modal */}
-      {!isForkliftOperator && !isLiquidStoreOnly && !isExFactoryOnly && !isSecurityGuardOnly && activeTicketForPrintSlip && (
+      {!isLiquidStoreOnly && !isSecurityGuardOnly && canPrintSlips && activeTicketForPrintSlip && (
         <LoadingSlipPrintView
           ticket={activeTicketForPrintSlip}
           settings={settings}

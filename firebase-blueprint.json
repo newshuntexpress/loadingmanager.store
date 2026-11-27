@@ -662,6 +662,104 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "ExFactoryEntryRecord": {
+      "title": "ExFactoryEntryRecord",
+      "description": "Plant-scoped Ex-Factory Dispatch entry and optional nested 8-row loading slip.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "plantId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32,
+          "pattern": "^[A-Z0-9_\\-]+$"
+        },
+        "entryDate": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 10,
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        },
+        "delNoteNumber": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "customerName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "loadingType": {
+          "type": "string",
+          "enum": ["local", "export", "sto"],
+          "maxLength": 16
+        },
+        "truckNumber": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "driverName": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "mobileNumber": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "iqamaNumber": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "loadingSlip": {
+          "type": "object",
+          "description": "Optional nested 8-row loading slip map."
+        },
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "isSharedPlant": {
+          "type": "boolean"
+        },
+        "createdBy": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "updatedBy": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "plantId",
+        "entryDate",
+        "delNoteNumber",
+        "customerName",
+        "truckNumber",
+        "ownerUid",
+        "isSharedPlant",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -704,6 +802,10 @@
     "/materials/{materialId}": {
       "schema": { "$ref": "#/entities/MaterialMasterItem" },
       "description": "Material Master catalog for loading slip pallet calculations."
+    },
+    "/ex_factory_entries/{entryId}": {
+      "schema": { "$ref": "#/entities/ExFactoryEntryRecord" },
+      "description": "Plant-scoped Ex-Factory Dispatch records and nested loading slips."
     }
   }
 }

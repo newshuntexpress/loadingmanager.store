@@ -302,7 +302,7 @@ export async function syncFirebaseUserProfileToFirestore(
   const adminDocRef = doc(db, 'admins', uid);
 
   let isFirestoreAdmin = isDefaultAdmin || safeRole === 'admin';
-  if (isDefaultAdmin) {
+  if (isDefaultAdmin || safeRole === 'admin') {
     try {
       const adminSnap = await getDoc(adminDocRef);
       if (!adminSnap.exists()) {
@@ -313,7 +313,7 @@ export async function syncFirebaseUserProfileToFirestore(
         });
       }
       // Ensure default admin has an active allowlist doc
-      if (emailKey) {
+      if (isDefaultAdmin && emailKey) {
         const emailDocRef = doc(db, 'authorized_emails', emailKey);
         const emailSnap = await getDoc(emailDocRef);
         if (!emailSnap.exists()) {
@@ -336,14 +336,16 @@ export async function syncFirebaseUserProfileToFirestore(
         }
       }
     } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, `admins/${uid}`);
+      if (isDefaultAdmin) {
+        handleFirestoreError(error, OperationType.WRITE, `admins/${uid}`);
+      }
     }
   } else {
     try {
       const adminSnap = await getDoc(adminDocRef);
-      isFirestoreAdmin = adminSnap.exists() || safeRole === 'admin';
+      isFirestoreAdmin = adminSnap.exists();
     } catch {
-      isFirestoreAdmin = safeRole === 'admin';
+      isFirestoreAdmin = false;
     }
   }
 
@@ -503,6 +505,8 @@ export async function verifyFirebaseUserAuthorized(
       : roleName === 'admin'
       ? [...ALL_PLANT_PERMISSIONS]
       : [...getDefaultPermissionsForRole(roleName)];
+
+    void syncFirebaseUserProfileToFirestore(fbUser, roleName).catch(() => {});
 
     return {
       authorized: true,
@@ -953,17 +957,18 @@ export function getDefaultPermissionsForRole(roleName: string): string[] {
     case 'admin':
       return ALL_PLANT_PERMISSIONS;
     case 'forklift_operator':
-      return ['tickets.view', 'forklift.operate'];
+      return ['tickets.view', 'forklift.operate', 'slips.print'];
     case 'liquid_store_operator':
       return ['liquid.view', 'liquid.store', 'liquid.materials'];
     case 'ex_factory_operator':
-      return ['ex_factory.view', 'ex_factory.create', 'ex_factory.update'];
+      return ['ex_factory.view', 'ex_factory.create', 'ex_factory.update', 'slips.print'];
     case 'security_guard':
       return ['guard.view'];
     case 'view_only':
       return [
         'tickets.view',
         'guard.view',
+        'slips.print',
         'materials.view',
         'dispatch.view',
         'material_register.view',

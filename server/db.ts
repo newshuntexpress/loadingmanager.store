@@ -506,6 +506,7 @@ export const MMD_MANAGER_DEFAULT_PERMISSION_KEYS = [
 export const VIEW_ONLY_ALLOWED_PERMISSION_KEYS = [
   'tickets.view',
   'guard.view',
+  'slips.print',
   'materials.view',
   'dispatch.view',
   'material_register.view',
@@ -540,6 +541,7 @@ export const USER_ASSIGNABLE_PERMISSION_KEYS = [
 export const FORKLIFT_ALLOWED_PERMISSION_KEYS = [
   'tickets.view',
   'forklift.operate',
+  'slips.print',
 ];
 
 export const LIQUID_STORE_ALLOWED_PERMISSION_KEYS = [
@@ -553,12 +555,14 @@ export const EX_FACTORY_ALLOWED_PERMISSION_KEYS = [
   'ex_factory.create',
   'ex_factory.update',
   'ex_factory.delete',
+  'slips.print',
 ];
 
 export const EX_FACTORY_DEFAULT_PERMISSION_KEYS = [
   'ex_factory.view',
   'ex_factory.create',
   'ex_factory.update',
+  'slips.print',
 ];
 
 export const SECURITY_GUARD_ALLOWED_PERMISSION_KEYS = [

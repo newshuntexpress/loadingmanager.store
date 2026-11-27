@@ -28,15 +28,20 @@ export const LoadingSlipPrintView: React.FC<LoadingSlipPrintViewProps> = ({
 }) => {
   const plantSettings = resolveSettingsForPlant(settings, ticket.plantId);
   const slip = ticket.loadingSlip;
+  const hasRecordedPreparer = Boolean(slip?.storeInchargeName || slip?.storeInchargeSignatureDataUrl);
   const isDifferentPreparer = Boolean(
-    slip?.storeInchargeUserId && currentUserId && slip.storeInchargeUserId !== currentUserId
+    (slip?.storeInchargeUserId && currentUserId && slip.storeInchargeUserId !== currentUserId) ||
+      (!slip?.storeInchargeUserId && hasRecordedPreparer)
   );
   const displayStoreInchargeName = isDifferentPreparer
     ? (slip?.storeInchargeName || storeInchargeFullName || '').trim()
     : (storeInchargeFullName || slip?.storeInchargeName || '').trim();
   const displaySignatureDataUrl = isDifferentPreparer
     ? slip?.storeInchargeSignatureDataUrl || plantSettings.storeInchargeSignatureDataUrl || ''
-    : storeInchargeSignatureDataUrl || plantSettings.storeInchargeSignatureDataUrl || '';
+    : storeInchargeSignatureDataUrl ||
+      slip?.storeInchargeSignatureDataUrl ||
+      plantSettings.storeInchargeSignatureDataUrl ||
+      '';
   const items = slip?.items || [];
   // Ensure we always have 8 rows
   const paddedItems = Array.from({ length: 8 }, (_, i) => {
@@ -101,12 +106,15 @@ export const LoadingSlipPrintView: React.FC<LoadingSlipPrintViewProps> = ({
 
     setTimeout(() => {
       window.removeEventListener('beforeprint', onBeforePrint);
-      if (!printDialogOpened) {
+      const isPrintMediaActive = Boolean(
+        typeof window.matchMedia === 'function' && window.matchMedia('print')?.matches
+      );
+      if (!printDialogOpened && !isPrintMediaActive) {
         generateLoadingSlipPDF(ticket, plantSettings, displayStoreInchargeName, displaySignatureDataUrl);
         setPdfNotice('2-Copy A4 PDF downloaded (preview frame restricts browser print popup). Open the PDF to print!');
         setTimeout(() => setPdfNotice(null), 6000);
       }
-    }, 250);
+    }, 450);
   }, [ticket, plantSettings, displayStoreInchargeName, displaySignatureDataUrl]);
 
   useEffect(() => {

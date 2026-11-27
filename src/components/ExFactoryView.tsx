@@ -42,6 +42,7 @@ interface ExFactoryViewProps {
   canCreate?: boolean;
   canUpdate?: boolean;
   canDelete?: boolean;
+  canPrint?: boolean;
 }
 
 async function copyTextReliable(text: string): Promise<boolean> {
@@ -141,6 +142,7 @@ export const ExFactoryView: React.FC<ExFactoryViewProps> = ({
   canCreate = true,
   canUpdate = true,
   canDelete = true,
+  canPrint = true,
 }) => {
   const [entries, setEntries] = useState<ExFactoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -475,7 +477,7 @@ export const ExFactoryView: React.FC<ExFactoryViewProps> = ({
         'success',
         `Loading Slip saved for ${updatedEntry.delNoteNumber} (${updatedEntry.loadingSlip?.totalQty || 0} Qty · ${updatedEntry.loadingSlip?.totalPallets || 0} Pallets)${autoSavedSuffix}`
       );
-      if (openPrintDirectly) {
+      if (openPrintDirectly && canPrint) {
         setAutoPrintExSlip(true);
         setActiveEntryForPrintSlip({ entry: updatedEntry, srNo: targetSrNo });
       }
@@ -1566,7 +1568,7 @@ export const ExFactoryView: React.FC<ExFactoryViewProps> = ({
                               <span>{slip ? 'Edit Slip' : 'Create Slip'}</span>
                             </button>
                           )}
-                          {slip && (
+                          {canPrint && slip && (
                             <button
                               type="button"
                               onClick={() => setActiveEntryForPrintSlip({ entry: item, srNo: idx + 1 })}
@@ -1696,7 +1698,7 @@ export const ExFactoryView: React.FC<ExFactoryViewProps> = ({
       )}
 
       {/* Ex-Factory 2-Copy A4 Loading Slip Print Preview */}
-      {activeEntryForPrintSlip && (
+      {canPrint && activeEntryForPrintSlip && (
         <LoadingSlipPrintView
           ticket={exFactoryToTicketRecord(activeEntryForPrintSlip.entry, activeEntryForPrintSlip.srNo, plantId)}
           settings={resolveSettingsForPlant(settings, activeEntryForPrintSlip.entry.plantId || plantId)}

@@ -16,6 +16,7 @@ import {
 import {
   auth,
   db,
+  DEFAULT_ADMIN_EMAIL,
   getDefaultPermissionsForRole,
   handleFirestoreError,
   OperationType,
@@ -26,10 +27,12 @@ import type {
   AuditLogEntry,
   AuthUser,
   CompanySettings,
+  ExFactoryEntry,
   LoadingSlipData,
   LoadingSlipItem,
   MaterialMasterRecord,
   TicketRecord,
+  TruckLoadingType,
   TruckStatus,
 } from '../types';
 import { mergeSettingsWithDefaults } from './storage';
@@ -263,8 +266,52 @@ export async function saveGateTicketToFirestore(
           return;
         }
 
+        const existingPlant =
+          typeof existingTicketData?.plantId === 'string' &&
+          /^[A-Z0-9_-]{1,32}$/.test(existingTicketData.plantId)
+            ? existingTicketData.plantId
+            : mutableFields.plantId;
+        const existingSeqNum = Number(existingTicketData?.sequenceNumber);
+        const preservedSeq =
+          Number.isFinite(existingSeqNum) && existingSeqNum >= 0
+            ? Math.round(existingSeqNum)
+            : Math.max(0, Math.round(Number(ticket.sequenceNumber) || 0));
+        const existingCreatedAt = existingTicketData?.createdAt;
+        const hasValidCreatedAt =
+          Boolean(existingCreatedAt) &&
+          typeof existingCreatedAt === 'object' &&
+          typeof (existingCreatedAt as { toMillis?: unknown }).toMillis === 'function';
+
+        const cleanUpdatePayload: Record<string, unknown> = {
+          id: ticketId,
+          ticketNumber:
+            typeof existingTicketData?.ticketNumber === 'string' && existingTicketData.ticketNumber.trim()
+              ? clampStr(existingTicketData.ticketNumber, 64)
+              : clampStr(ticket.ticketNumber, 64, ticketId),
+          sequenceNumber: preservedSeq,
+          date:
+            typeof existingTicketData?.date === 'string' &&
+            /^\d{4}-\d{2}-\d{2}$/.test(existingTicketData.date)
+              ? existingTicketData.date
+              : normalizeDateStr(ticket.date),
+          timeIn:
+            typeof existingTicketData?.timeIn === 'string' && existingTicketData.timeIn.trim()
+              ? clampStr(existingTicketData.timeIn, 32)
+              : clampStr(ticket.timeIn, 32, '00:00:00'),
+          ownerUid: ticketOwnerUid || uid,
+          ...(existingTicketData?.createdBy
+            ? { createdBy: clampStr(existingTicketData.createdBy, 120) }
+            : ticket.createdBy
+            ? { createdBy: clampStr(ticket.createdBy, 120) }
+            : {}),
+          ...mutableFields,
+          plantId: existingPlant,
+          createdAt: hasValidCreatedAt ? existingCreatedAt : serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        };
+
         currentOp = OperationType.UPDATE;
-        tx.update(ticketRef, mutableFields);
+        tx.set(ticketRef, cleanUpdatePayload);
       });
     } catch (error) {
       handleFirestoreError(error, currentOp, `gate_tickets/${ticketId}`);
@@ -283,10 +330,10 @@ export async function saveGateTicketToFirestore(
           ...(iqamaNumber ? { iqamaNumber } : {}),
           updatedAt: serverTimestamp(),
         });
-      } else if (ticketOwnerUid === uid) {
+      } else if (ticketOwnerUid === uid || user.email?.toLowerCase() === DEFAULT_ADMIN_EMAIL) {
         await setDoc(piiRef, {
           ticketId,
-          ownerUid: ticketOwnerUid,
+          ownerUid: uid,
           driverPhone,
           ...(iqamaNumber ? { iqamaNumber } : {}),
           createdAt: serverTimestamp(),
@@ -321,6 +368,115 @@ export async function deleteGateTicketFromFirestore(ticketId: string): Promise<v
   });
 }
 
+function mapFirestoreDocToTicket(
+  docId: string,
+  d: Record<string, unknown>,
+  fallbackPii?: { driverPhone?: string; iqamaNumber?: string }
+): TicketRecord {
+  const createdAt = timestampToMillis(d.createdAt);
+  const updatedAt = timestampToMillis(d.updatedAt, createdAt);
+  const plantId =
+    typeof d.plantId === 'string' && d.plantId.trim()
+      ? d.plantId.trim().toUpperCase()
+      : 'RIYADH';
+
+  return {
+    id: String(d.id || docId),
+    plantId,
+    ticketNumber: String(d.ticketNumber || docId),
+    sequenceNumber: Number(d.sequenceNumber || 0),
+    date: String(d.date || normalizeDateStr(undefined)),
+    timeIn: String(d.timeIn || ''),
+    timeCalled: typeof d.timeCalled === 'string' ? d.timeCalled : undefined,
+    timeLoadingStarted:
+      typeof d.timeLoadingStarted === 'string' ? d.timeLoadingStarted : undefined,
+    timeCompleted: typeof d.timeCompleted === 'string' ? d.timeCompleted : undefined,
+    gateNumber: String(d.gateNumber || 'Gate 1'),
+    gateSequenceNumber: Number(d.gateSequenceNumber || 0),
+    truckNumber: String(d.truckNumber || ''),
+    driverName: String(d.driverName || ''),
+    driverPhone: fallbackPii?.driverPhone || '',
+    iqamaNumber: fallbackPii?.iqamaNumber || '',
+    transporterName: String(d.transporterName || ''),
+    destinationPlace: String(d.destinationPlace || ''),
+    loadingType:
+      d.loadingType === 'local' || d.loadingType === 'export' || d.loadingType === 'sto'
+        ? d.loadingType
+        : undefined,
+    delNoteNumber: typeof d.delNoteNumber === 'string' ? d.delNoteNumber : undefined,
+    status: normalizeStatus(d.status),
+    loadingSlip: d.loadingSlip as LoadingSlipData | undefined,
+    remarks: typeof d.remarks === 'string' ? d.remarks : undefined,
+    priority: d.priority === 'urgent' || d.priority === 'normal' ? d.priority : 'normal',
+    version: typeof d.version === 'number' ? d.version : undefined,
+    createdBy: typeof d.createdBy === 'string' ? d.createdBy : undefined,
+    updatedBy: typeof d.updatedBy === 'string' ? d.updatedBy : undefined,
+    createdAt,
+    updatedAt,
+  };
+}
+
+export async function getGateTicketFromFirestore(ticketId: string): Promise<TicketRecord | null> {
+  const user = auth.currentUser;
+  if (!user || !user.emailVerified) return null;
+  const cleanId = safeId(ticketId, 'tk');
+  try {
+    const snap = await getDoc(doc(db, 'gate_tickets', cleanId));
+    if (!snap.exists()) return null;
+    const rec = mapFirestoreDocToTicket(snap.id, snap.data() as Record<string, unknown>);
+    try {
+      const piiSnap = await getDoc(doc(db, 'gate_tickets', cleanId, 'private', 'driver'));
+      if (piiSnap.exists()) {
+        const pii = piiSnap.data();
+        if (typeof pii.driverPhone === 'string') rec.driverPhone = pii.driverPhone;
+        if (typeof pii.iqamaNumber === 'string') rec.iqamaNumber = pii.iqamaNumber;
+      }
+    } catch {
+      // Non-owner operator without PII subcollection read access
+    }
+    return rec;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, `gate_tickets/${cleanId}`);
+  }
+}
+
+export async function listGateTicketsFromFirestore(plantId?: string): Promise<TicketRecord[]> {
+  const user = auth.currentUser;
+  if (!user || !user.emailVerified) return [];
+  try {
+    const q = query(collection(db, 'gate_tickets'), where('isSharedPlant', '==', true));
+    const snapshot = await getDocs(q);
+    let rawRecords = snapshot.docs.map((docSnap) =>
+      mapFirestoreDocToTicket(docSnap.id, docSnap.data() as Record<string, unknown>)
+    );
+    if (plantId && plantId !== 'ALL') {
+      const norm = plantId.trim().toUpperCase();
+      rawRecords = rawRecords.filter((rec) => (rec.plantId || 'RIYADH').toUpperCase() === norm);
+    }
+    await Promise.all(
+      rawRecords.map(async (rec) => {
+        try {
+          const piiSnap = await getDoc(doc(db, 'gate_tickets', rec.id, 'private', 'driver'));
+          if (piiSnap.exists()) {
+            const pii = piiSnap.data();
+            if (typeof pii.driverPhone === 'string' && pii.driverPhone) rec.driverPhone = pii.driverPhone;
+            if (typeof pii.iqamaNumber === 'string' && pii.iqamaNumber) rec.iqamaNumber = pii.iqamaNumber;
+          }
+        } catch {
+          // Non-owner operator
+        }
+      })
+    );
+    rawRecords.sort((a, b) => {
+      if (a.date !== b.date) return b.date.localeCompare(a.date);
+      return (a.sequenceNumber || 0) - (b.sequenceNumber || 0);
+    });
+    return rawRecords;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, 'gate_tickets');
+  }
+}
+
 export function subscribeFirestoreTickets(
   onData: (tickets: TicketRecord[]) => void,
   onError?: (err: Error) => void,
@@ -333,52 +489,13 @@ export function subscribeFirestoreTickets(
   return onSnapshot(
     q,
     async (snapshot) => {
-      let rawRecords = snapshot.docs.map((docSnap) => {
-        const d = docSnap.data();
-        const createdAt = timestampToMillis(d.createdAt);
-        const updatedAt = timestampToMillis(d.updatedAt, createdAt);
-        const fallbackPii = fallbackDriverPiiById?.get(docSnap.id);
-        const plantId =
-          typeof d.plantId === 'string' && d.plantId.trim()
-            ? d.plantId.trim().toUpperCase()
-            : 'RIYADH';
-
-        const rec: TicketRecord = {
-          id: String(d.id || docSnap.id),
-          plantId,
-          ticketNumber: String(d.ticketNumber || docSnap.id),
-          sequenceNumber: Number(d.sequenceNumber || 0),
-          date: String(d.date || normalizeDateStr(undefined)),
-          timeIn: String(d.timeIn || ''),
-          timeCalled: typeof d.timeCalled === 'string' ? d.timeCalled : undefined,
-          timeLoadingStarted:
-            typeof d.timeLoadingStarted === 'string' ? d.timeLoadingStarted : undefined,
-          timeCompleted: typeof d.timeCompleted === 'string' ? d.timeCompleted : undefined,
-          gateNumber: String(d.gateNumber || 'Gate 1'),
-          gateSequenceNumber: Number(d.gateSequenceNumber || 0),
-          truckNumber: String(d.truckNumber || ''),
-          driverName: String(d.driverName || ''),
-          driverPhone: fallbackPii?.driverPhone || '',
-          iqamaNumber: fallbackPii?.iqamaNumber || '',
-          transporterName: String(d.transporterName || ''),
-          destinationPlace: String(d.destinationPlace || ''),
-          loadingType:
-            d.loadingType === 'local' || d.loadingType === 'export' || d.loadingType === 'sto'
-              ? d.loadingType
-              : undefined,
-          delNoteNumber: typeof d.delNoteNumber === 'string' ? d.delNoteNumber : undefined,
-          status: normalizeStatus(d.status),
-          loadingSlip: d.loadingSlip as LoadingSlipData | undefined,
-          remarks: typeof d.remarks === 'string' ? d.remarks : undefined,
-          priority: d.priority === 'urgent' || d.priority === 'normal' ? d.priority : 'normal',
-          version: typeof d.version === 'number' ? d.version : undefined,
-          createdBy: typeof d.createdBy === 'string' ? d.createdBy : undefined,
-          updatedBy: typeof d.updatedBy === 'string' ? d.updatedBy : undefined,
-          createdAt,
-          updatedAt,
-        };
-        return rec;
-      });
+      let rawRecords = snapshot.docs.map((docSnap) =>
+        mapFirestoreDocToTicket(
+          docSnap.id,
+          docSnap.data() as Record<string, unknown>,
+          fallbackDriverPiiById?.get(docSnap.id)
+        )
+      );
 
       if (
         Array.isArray(allowedPlants) &&
@@ -746,6 +863,172 @@ export async function getPlantSettingsFromFirestore(): Promise<CompanySettings |
   } catch {
     return null;
   }
+}
+
+export async function listMaterialsFromFirestore(): Promise<MaterialMasterRecord[]> {
+  const user = auth.currentUser;
+  if (!user || !user.emailVerified) return [];
+  try {
+    const q = query(collection(db, 'materials'), where('isSharedPlant', '==', true));
+    const snapshot = await getDocs(q);
+    const list: MaterialMasterRecord[] = snapshot.docs.map((docSnap) => {
+      const d = docSnap.data();
+      const createdAt = timestampToMillis(d.createdAt);
+      const updatedAt = timestampToMillis(d.updatedAt, createdAt);
+      return {
+        id: String(d.id || docSnap.id),
+        materialName: String(d.materialName || ''),
+        packType: String(d.packType || 'Rolls'),
+        palletRatio: Number(d.palletRatio || 1),
+        remarks: typeof d.remarks === 'string' ? d.remarks : '',
+        createdBy: typeof d.createdBy === 'string' ? d.createdBy : '',
+        updatedBy: typeof d.updatedBy === 'string' ? d.updatedBy : '',
+        createdAt,
+        updatedAt,
+      };
+    });
+    list.sort((a, b) => a.materialName.localeCompare(b.materialName));
+    return list;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, 'materials');
+  }
+}
+
+function normalizeExFactoryLoadingType(raw: unknown): TruckLoadingType {
+  return raw === 'export' || raw === 'sto' ? raw : 'local';
+}
+
+export async function listExFactoryEntriesFromFirestore(plantId?: string): Promise<ExFactoryEntry[]> {
+  const user = auth.currentUser;
+  if (!user || !user.emailVerified) return [];
+  try {
+    const q = query(collection(db, 'ex_factory_entries'), where('isSharedPlant', '==', true));
+    const snapshot = await getDocs(q);
+    let entries: ExFactoryEntry[] = snapshot.docs.map((docSnap) => {
+      const d = docSnap.data();
+      const createdAt = timestampToMillis(d.createdAt);
+      const updatedAt = timestampToMillis(d.updatedAt, createdAt);
+      return {
+        id: String(d.id || docSnap.id),
+        plantId: typeof d.plantId === 'string' && d.plantId.trim() ? d.plantId.trim().toUpperCase() : 'RIYADH',
+        entryDate: normalizeDateStr(d.entryDate),
+        delNoteNumber: String(d.delNoteNumber || ''),
+        customerName: String(d.customerName || ''),
+        loadingType: normalizeExFactoryLoadingType(d.loadingType),
+        truckNumber: String(d.truckNumber || ''),
+        driverName: typeof d.driverName === 'string' ? d.driverName : '',
+        mobileNumber: typeof d.mobileNumber === 'string' ? d.mobileNumber : '',
+        iqamaNumber: typeof d.iqamaNumber === 'string' ? d.iqamaNumber : '',
+        ...(d.loadingSlip && typeof d.loadingSlip === 'object'
+          ? { loadingSlip: d.loadingSlip as LoadingSlipData }
+          : {}),
+        createdBy: typeof d.createdBy === 'string' ? d.createdBy : undefined,
+        updatedBy: typeof d.updatedBy === 'string' ? d.updatedBy : undefined,
+        createdAt,
+        updatedAt,
+      };
+    });
+    if (plantId && plantId !== 'ALL') {
+      const norm = plantId.trim().toUpperCase();
+      entries = entries.filter((e) => (e.plantId || 'RIYADH').toUpperCase() === norm);
+    }
+    entries.sort((a, b) => {
+      if (a.entryDate !== b.entryDate) return b.entryDate.localeCompare(a.entryDate);
+      return (b.createdAt || 0) - (a.createdAt || 0);
+    });
+    return entries;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, 'ex_factory_entries');
+  }
+}
+
+export async function saveExFactoryEntryToFirestore(entry: ExFactoryEntry): Promise<void> {
+  const user = auth.currentUser;
+  if (!user || !user.emailVerified) return;
+
+  const uid = safeId(user.uid, 'usr');
+  const entryId = safeId(entry.id, 'exf');
+  const actorLabel = clampStr(user.displayName || user.email || 'user', 120);
+
+  return withDocLock(`ex_factory_entries/${entryId}`, async () => {
+    const ref = doc(db, 'ex_factory_entries', entryId);
+    const mutableFields: Record<string, unknown> = {
+      plantId: clampStr(entry.plantId || 'RIYADH', 32, 'RIYADH').toUpperCase(),
+      entryDate: normalizeDateStr(entry.entryDate),
+      delNoteNumber: clampStr(entry.delNoteNumber, 64, entryId),
+      customerName: clampStr(entry.customerName, 160, 'CUSTOMER'),
+      loadingType: normalizeExFactoryLoadingType(entry.loadingType),
+      truckNumber: clampStr(entry.truckNumber, 40, 'UNKNOWN'),
+      driverName: clampStr(entry.driverName, 120),
+      mobileNumber: clampStr(entry.mobileNumber, 32),
+      iqamaNumber: clampStr(entry.iqamaNumber, 40),
+      isSharedPlant: true,
+      updatedBy: clampStr(entry.updatedBy || actorLabel, 120),
+      updatedAt: serverTimestamp(),
+      ...(entry.loadingSlip ? { loadingSlip: sanitizeLoadingSlip(entry.loadingSlip) } : {}),
+    };
+
+    let currentOp = OperationType.GET;
+    try {
+      await runTransaction(db, async (tx) => {
+        currentOp = OperationType.GET;
+        const snap = await tx.get(ref);
+        if (!snap.exists()) {
+          currentOp = OperationType.CREATE;
+          tx.set(ref, {
+            id: entryId,
+            ownerUid: uid,
+            createdBy: clampStr(entry.createdBy || actorLabel, 120),
+            ...mutableFields,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+          return;
+        }
+        const existingData = snap.data();
+        const existingPlant =
+          typeof existingData?.plantId === 'string' &&
+          /^[A-Z0-9_-]{1,32}$/.test(existingData.plantId)
+            ? existingData.plantId
+            : mutableFields.plantId;
+        const existingCreatedAt = existingData?.createdAt;
+        const hasValidCreatedAt =
+          Boolean(existingCreatedAt) &&
+          typeof existingCreatedAt === 'object' &&
+          typeof (existingCreatedAt as { toMillis?: unknown }).toMillis === 'function';
+
+        currentOp = OperationType.UPDATE;
+        tx.set(ref, {
+          id: entryId,
+          ownerUid: clampStr(existingData?.ownerUid || uid, 128) || uid,
+          ...(existingData?.createdBy
+            ? { createdBy: clampStr(existingData.createdBy, 120) }
+            : entry.createdBy
+            ? { createdBy: clampStr(entry.createdBy, 120) }
+            : {}),
+          ...mutableFields,
+          plantId: existingPlant,
+          createdAt: hasValidCreatedAt ? existingCreatedAt : serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      });
+    } catch (error) {
+      handleFirestoreError(error, currentOp, `ex_factory_entries/${entryId}`);
+    }
+  });
+}
+
+export async function deleteExFactoryEntryFromFirestore(entryId: string): Promise<void> {
+  const user = auth.currentUser;
+  if (!user || !user.emailVerified) return;
+  const cleanId = safeId(entryId, 'exf');
+  return withDocLock(`ex_factory_entries/${cleanId}`, async () => {
+    try {
+      await deleteDoc(doc(db, 'ex_factory_entries', cleanId));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `ex_factory_entries/${cleanId}`);
+    }
+  });
 }
 
 export async function savePlantSettingsToFirestore(settings: CompanySettings): Promise<void> {

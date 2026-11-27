@@ -477,9 +477,9 @@ export const LoadingSlipModal: React.FC<LoadingSlipModalProps> = ({
       totalLooseRolls,
       preparedBy: preparedBy.trim().toUpperCase(),
       checkedBy: checkedBy.trim().toUpperCase(),
-      storeInchargeUserId: currentUserId,
+      storeInchargeUserId: isOtherPreparerLocked ? existingSlip?.storeInchargeUserId : currentUserId,
       storeInchargeName: displayStoreInchargeName,
-      storeInchargeSignatureDataUrl: storeInchargeSignatureDataUrl || '',
+      storeInchargeSignatureDataUrl: displaySignatureDataUrl,
       createdAt: existingSlip?.createdAt || new Date().toISOString().split('T')[0],
     };
   };

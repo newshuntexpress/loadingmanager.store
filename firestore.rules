@@ -430,6 +430,58 @@ service cloud.firestore {
         data.updatedAt is timestamp;
     }
 
+    function isValidExFactoryEntry(data, entryId) {
+      return data.keys().hasAll([
+          'id',
+          'plantId',
+          'entryDate',
+          'delNoteNumber',
+          'customerName',
+          'truckNumber',
+          'ownerUid',
+          'isSharedPlant',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id',
+          'plantId',
+          'entryDate',
+          'delNoteNumber',
+          'customerName',
+          'loadingType',
+          'truckNumber',
+          'driverName',
+          'mobileNumber',
+          'iqamaNumber',
+          'loadingSlip',
+          'ownerUid',
+          'isSharedPlant',
+          'createdBy',
+          'updatedBy',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        data.id == entryId &&
+        isValidPlantCode(data.plantId) &&
+        data.entryDate is string && data.entryDate.size() == 10 && data.entryDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$') &&
+        data.delNoteNumber is string && data.delNoteNumber.size() >= 1 && data.delNoteNumber.size() <= 64 &&
+        data.customerName is string && data.customerName.size() >= 1 && data.customerName.size() <= 160 &&
+        (!('loadingType' in data) || (data.loadingType is string && data.loadingType.size() <= 16 && data.loadingType in ['local', 'export', 'sto'])) &&
+        data.truckNumber is string && data.truckNumber.size() >= 1 && data.truckNumber.size() <= 40 &&
+        (!('driverName' in data) || (data.driverName is string && data.driverName.size() <= 120)) &&
+        (!('mobileNumber' in data) || (data.mobileNumber is string && data.mobileNumber.size() <= 32)) &&
+        (!('iqamaNumber' in data) || (data.iqamaNumber is string && data.iqamaNumber.size() <= 40)) &&
+        (!('loadingSlip' in data) || isValidLoadingSlip(data.loadingSlip)) &&
+        isValidId(data.ownerUid) &&
+        data.isSharedPlant is bool &&
+        (!('createdBy' in data) || (data.createdBy is string && data.createdBy.size() <= 120)) &&
+        (!('updatedBy' in data) || (data.updatedBy is string && data.updatedBy.size() <= 120)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
     // Non-PII user profiles: ONLY Admins can create or delete; owners must already be active & allowlisted
     match /users/{userId} {
       allow get: if isValidId(userId) && (isAdmin() || (isOwner(userId) && isActiveAllowlisted()));
@@ -507,8 +559,8 @@ service cloud.firestore {
 
     // Admin-managed user authorization records (Create/Edit/Delete strictly restricted to Administrators)
     match /authorized_users/{userId} {
-      allow get: if isValidId(userId) && (isAdmin() || (isActiveAllowlisted() && existing().email == cleanEmailLower()));
-      allow list: if isEmailVerified() && (isBootstrappedAdmin() || resource.data.ownerUid == request.auth.uid);
+      allow get: if isValidId(userId) && (isAdmin() || (isActiveAllowlisted() && resource != null && existing().email == cleanEmailLower()));
+      allow list: if isAdmin() || (isEmailVerified() && resource.data.ownerUid == request.auth.uid);
 
       allow create: if isAdmin() &&
         isValidId(userId) &&
@@ -547,7 +599,7 @@ service cloud.firestore {
         emailKey == callerEmailKey() ||
         (resource != null && existing().email == cleanEmailLower())
       );
-      allow list: if isEmailVerified() && (isBootstrappedAdmin() || resource.data.ownerUid == request.auth.uid);
+      allow list: if isAdmin() || (isEmailVerified() && resource.data.ownerUid == request.auth.uid);
 
       allow create: if isAdmin() &&
         isValidId(emailKey) &&
@@ -596,7 +648,7 @@ service cloud.firestore {
     // Append-only Administrator Audit Logs
     match /audit_logs/{logId} {
       allow get: if isValidId(logId) && isAdmin();
-      allow list: if isEmailVerified() && (isBootstrappedAdmin() || resource.data.ownerUid == request.auth.uid);
+      allow list: if isAdmin() || (isEmailVerified() && resource.data.ownerUid == request.auth.uid);
       allow create: if isAdmin() &&
         isValidId(logId) &&
         isValidAuditLogEntry(incoming(), logId) &&
@@ -608,7 +660,7 @@ service cloud.firestore {
     // Shared Multi-Plant Settings (readable by active allowlisted users; writable only by Administrators)
     match /plant_settings/{settingId} {
       allow get: if isValidId(settingId) && isActiveAllowlisted();
-      allow list: if isEmailVerified() && (isBootstrappedAdmin() || resource.data.ownerUid == request.auth.uid);
+      allow list: if isActiveAllowlisted();
 
       allow create: if isAdmin() &&
         isValidId(settingId) &&
@@ -643,7 +695,7 @@ service cloud.firestore {
           isAdmin() ||
           (
             (existing().ownerUid == request.auth.uid || existing().isSharedPlant == true) &&
-            canAccessPlant(('plantId' in existing()) ? existing().plantId : 'RIYADH')
+            canAccessPlant(('plantId' in existing() && existing().plantId is string && existing().plantId != '') ? existing().plantId : 'RIYADH')
           )
         );
 
@@ -653,7 +705,7 @@ service cloud.firestore {
       allow create: if isActiveAllowlisted() &&
         isValidId(ticketId) &&
         isValidGateTicket(incoming(), ticketId) &&
-        canAccessPlant(('plantId' in incoming()) ? incoming().plantId : 'RIYADH') &&
+        canAccessPlant(('plantId' in incoming() && incoming().plantId is string && incoming().plantId != '') ? incoming().plantId : 'RIYADH') &&
         incoming().ownerUid == request.auth.uid &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time;
@@ -661,16 +713,16 @@ service cloud.firestore {
       allow update: if isActiveAllowlisted() &&
         isValidId(ticketId) &&
         isValidGateTicket(incoming(), ticketId) &&
-        canAccessPlant(('plantId' in existing()) ? existing().plantId : 'RIYADH') &&
-        incoming().id == existing().id &&
-        incoming().ownerUid == existing().ownerUid &&
-        incoming().createdAt == existing().createdAt &&
+        canAccessPlant(('plantId' in existing() && existing().plantId is string && existing().plantId != '') ? existing().plantId : 'RIYADH') &&
+        (!('id' in existing()) || incoming().id == existing().id) &&
+        (!('ownerUid' in existing()) || incoming().ownerUid == existing().ownerUid) &&
+        ((!('createdAt' in existing()) || !(existing().createdAt is timestamp)) && isAdmin() || incoming().createdAt == existing().createdAt) &&
         incoming().updatedAt == request.time &&
         (
           isAdmin() ||
           (
             (existing().ownerUid == request.auth.uid || existing().isSharedPlant == true) &&
-            (!('plantId' in existing()) || incoming().plantId == existing().plantId) &&
+            (!('plantId' in existing()) || !(existing().plantId is string) || existing().plantId == '' || incoming().plantId == existing().plantId) &&
             existing().status != 'completed' &&
             existing().status != 'cancelled' &&
             incoming().diff(existing()).affectedKeys().hasOnly([
@@ -693,7 +745,15 @@ service cloud.firestore {
               'version',
               'updatedBy',
               'updatedAt',
-              'isSharedPlant'
+              'isSharedPlant',
+              'driverPhone',
+              'iqamaNumber',
+              'autoLoadingMinutes',
+              'autoUnderLoadingAt',
+              'autoStatusUpdatedAt',
+              'autoUnderLoadingApplied',
+              'manualStatusOverride',
+              'driverStatusToken'
             ])
           )
         );
@@ -702,7 +762,7 @@ service cloud.firestore {
         isActiveAllowlisted() &&
         (
           isAdmin() ||
-          (existing().ownerUid == request.auth.uid && canAccessPlant(('plantId' in existing()) ? existing().plantId : 'RIYADH'))
+          (existing().ownerUid == request.auth.uid && canAccessPlant(('plantId' in existing() && existing().plantId is string && existing().plantId != '') ? existing().plantId : 'RIYADH'))
         );
 
       // Isolated Driver Phone & Iqama PII
@@ -788,6 +848,54 @@ service cloud.firestore {
       allow delete: if isValidId(materialId) &&
         isActiveAllowlisted() &&
         (isAdmin() || existing().ownerUid == request.auth.uid);
+    }
+
+    // Plant-Scoped Ex-Factory Dispatch Entries & Loading Slips
+    match /ex_factory_entries/{entryId} {
+      allow get: if isValidId(entryId) &&
+        isActiveAllowlisted() &&
+        (
+          resource == null ||
+          isAdmin() ||
+          (
+            (existing().ownerUid == request.auth.uid || existing().isSharedPlant == true) &&
+            canAccessPlant(('plantId' in existing() && existing().plantId is string && existing().plantId != '') ? existing().plantId : 'RIYADH')
+          )
+        );
+
+      allow list: if isEmailVerified() &&
+        (resource.data.ownerUid == request.auth.uid || resource.data.isSharedPlant == true);
+
+      allow create: if isActiveAllowlisted() &&
+        isValidId(entryId) &&
+        isValidExFactoryEntry(incoming(), entryId) &&
+        canAccessPlant(incoming().plantId) &&
+        incoming().ownerUid == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isActiveAllowlisted() &&
+        isValidId(entryId) &&
+        isValidExFactoryEntry(incoming(), entryId) &&
+        canAccessPlant(('plantId' in existing() && existing().plantId is string && existing().plantId != '') ? existing().plantId : 'RIYADH') &&
+        incoming().id == existing().id &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          isAdmin() ||
+          (
+            (existing().ownerUid == request.auth.uid || existing().isSharedPlant == true) &&
+            (!('plantId' in existing()) || !(existing().plantId is string) || existing().plantId == '' || incoming().plantId == existing().plantId)
+          )
+        );
+
+      allow delete: if isValidId(entryId) &&
+        isActiveAllowlisted() &&
+        (
+          isAdmin() ||
+          (existing().ownerUid == request.auth.uid && canAccessPlant(('plantId' in existing() && existing().plantId is string && existing().plantId != '') ? existing().plantId : 'RIYADH'))
+        );
     }
 
     // Connection check document (server check only; no public writes)

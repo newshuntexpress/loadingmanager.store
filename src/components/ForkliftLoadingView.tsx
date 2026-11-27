@@ -995,25 +995,38 @@ export const ForkliftLoadingView: React.FC<ForkliftLoadingViewProps> = ({
                       </div>
                     </div>
 
-                    <button
-                      type="button"
-                      disabled={openingId === ticket.id}
-                      onClick={() => handleOpenSlip(ticket)}
-                      className={`app-btn w-full ${
-                        ticket.status === 'under_loading'
-                          ? 'bg-[#E9730C] hover:bg-[#C25900] text-white'
-                          : 'bg-[#0A6ED1] hover:bg-[#085CAF] text-white'
-                      }`}
-                    >
-                      {openingId === ticket.id ? (
-                        <Loader2 className="w-4 h-4 animate-spin shrink-0" />
-                      ) : (
-                        <PackageCheck className="w-4 h-4 shrink-0" />
+                    <div className={canPrint && ticket.loadingSlip ? 'grid grid-cols-[1fr_auto] gap-2' : ''}>
+                      <button
+                        type="button"
+                        disabled={openingId === ticket.id}
+                        onClick={() => handleOpenSlip(ticket)}
+                        className={`app-btn w-full ${
+                          ticket.status === 'under_loading'
+                            ? 'bg-[#E9730C] hover:bg-[#C25900] text-white'
+                            : 'bg-[#0A6ED1] hover:bg-[#085CAF] text-white'
+                        }`}
+                      >
+                        {openingId === ticket.id ? (
+                          <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+                        ) : (
+                          <PackageCheck className="w-4 h-4 shrink-0" />
+                        )}
+                        <span>
+                          {ticket.status === 'under_loading' ? 'Continue Loading Checklist' : 'Open Loading Slip'}
+                        </span>
+                      </button>
+                      {canPrint && ticket.loadingSlip && (
+                        <button
+                          type="button"
+                          onClick={() => onPrintLoadingSlip(ticket)}
+                          className="app-btn bg-[#354A5F] hover:bg-[#243647] text-white px-3"
+                          title="Print 2-Copy A4 Loading Slip"
+                        >
+                          <Printer className="w-4 h-4 text-[#F0AB00] shrink-0" />
+                          <span>Print</span>
+                        </button>
                       )}
-                      <span>
-                        {ticket.status === 'under_loading' ? 'Continue Loading Checklist' : 'Open Loading Slip'}
-                      </span>
-                    </button>
+                    </div>
                   </div>
                 );
               })}

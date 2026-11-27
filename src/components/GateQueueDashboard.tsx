@@ -11,6 +11,7 @@ import {
   Megaphone,
   MessageSquare,
   FileText,
+  Printer,
   ArrowRight,
   Timer,
   Activity,
@@ -29,6 +30,7 @@ interface GateQueueDashboardProps {
   onStartLoading: (ticket: TicketRecord) => void;
   onCompleteLoading: (ticket: TicketRecord) => void;
   onOpenLoadingSlip: (ticket: TicketRecord) => void;
+  onPrintLoadingSlip?: (ticket: TicketRecord) => void;
   onOpenWhatsApp: (ticket: TicketRecord, templateId?: string) => void;
   canUpdate?: boolean;
   canPrint?: boolean;
@@ -137,6 +139,7 @@ export const GateQueueDashboard: React.FC<GateQueueDashboardProps> = ({
   onStartLoading,
   onCompleteLoading,
   onOpenLoadingSlip,
+  onPrintLoadingSlip,
   onOpenWhatsApp,
   canUpdate = true,
   canPrint = true,
@@ -524,7 +527,10 @@ export const GateQueueDashboard: React.FC<GateQueueDashboardProps> = ({
                       </div>
 
                       {/* Action buttons */}
-                      {(canUpdate || canPrint) && (
+                      {(canUpdate ||
+                        (canPrint &&
+                          Boolean(onPrintLoadingSlip) &&
+                          Boolean(currentLoading.loadingSlip || currentLoading.delNoteNumber))) && (
                         <div className="grid grid-cols-2 gap-2 pt-2.5 border-t border-[#F3B780]/70">
                           {canUpdate && (
                             <button
@@ -546,6 +552,19 @@ export const GateQueueDashboard: React.FC<GateQueueDashboardProps> = ({
                               <span>Complete</span>
                             </button>
                           )}
+                          {!canUpdate &&
+                            canPrint &&
+                            onPrintLoadingSlip &&
+                            (currentLoading.loadingSlip || currentLoading.delNoteNumber) && (
+                              <button
+                                type="button"
+                                onClick={() => onPrintLoadingSlip(currentLoading)}
+                                className="app-btn-sm col-span-2 w-full bg-[#354A5F] hover:bg-[#243647] text-white"
+                              >
+                                <Printer className="w-3.5 h-3.5 text-[#F0AB00] shrink-0" />
+                                <span>Print Slip</span>
+                              </button>
+                            )}
                         </div>
                       )}
                     </div>
