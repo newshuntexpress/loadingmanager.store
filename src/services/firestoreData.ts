@@ -1101,7 +1101,7 @@ export async function saveExFactoryEntryToFirestore(entry: ExFactoryEntry): Prom
     const mutableFields: Record<string, unknown> = {
       plantId: sanitizePlantCode(entry.plantId, 'RIYADH'),
       entryDate: normalizeDateStr(entry.entryDate),
-      delNoteNumber: clampStr(entry.delNoteNumber, 64, entryId),
+      delNoteNumber: clampStr(entry.delNoteNumber, 64),
       customerName: clampStr(entry.customerName, 160, 'CUSTOMER'),
       loadingType: normalizeExFactoryLoadingType(entry.loadingType),
       truckNumber: clampStr(entry.truckNumber, 40, 'UNKNOWN'),

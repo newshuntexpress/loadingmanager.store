@@ -688,7 +688,6 @@
         },
         "delNoteNumber": {
           "type": "string",
-          "minLength": 1,
           "maxLength": 64
         },
         "customerName": {

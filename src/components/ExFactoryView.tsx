@@ -386,8 +386,8 @@ export const ExFactoryView: React.FC<ExFactoryViewProps> = ({
     const cleanMobile = mobileNumber.trim().toUpperCase();
     const cleanIqama = iqamaNumber.trim().toUpperCase();
 
-    if (!cleanDn || !cleanCust || !cleanTruck) {
-      showToast('error', 'Del Note No., Customer Name, and Truck No. are required.');
+    if (!cleanCust || !cleanTruck) {
+      showToast('error', 'Customer Name and Truck No. are required.');
       return;
     }
 
@@ -1044,13 +1044,12 @@ export const ExFactoryView: React.FC<ExFactoryViewProps> = ({
 
             {/* Del Note No. */}
             <div>
-              <label className="block text-xs font-bold text-[#354A5F] mb-1">Del Note No. *</label>
+              <label className="block text-xs font-bold text-[#354A5F] mb-1">Del Note No. (Optional)</label>
               <input
                 type="text"
-                required
                 value={delNoteNumber}
                 onChange={(e) => setDelNoteNumber(e.target.value)}
-                placeholder="e.g. A1DD00001"
+                placeholder="e.g. A1DD00001 (Optional)"
                 className="w-full px-3 py-2 text-xs rounded-lg border border-[#BCC8D4] bg-white text-[#1C2833] uppercase font-mono focus:outline-none focus:ring-2 focus:ring-[#0A6ED1]"
               />
             </div>

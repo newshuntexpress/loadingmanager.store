@@ -74,10 +74,6 @@ export const EditTicketModal: React.FC<EditTicketModalProps> = ({
     e.preventDefault();
     setFormError(null);
 
-    if (!delNoteNumber.trim()) {
-      setFormError('Delivery Note Number (Del Note No.) is required.');
-      return;
-    }
     if (!truckNumber.trim()) {
       setFormError('Vehicle / Truck Number is required.');
       return;
@@ -188,7 +184,7 @@ export const EditTicketModal: React.FC<EditTicketModalProps> = ({
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="text-xs font-bold text-neutral-700 block mb-1">
-                Delivery Note Number (Del Note No.) *
+                Delivery Note Number (Del Note No.) (Optional)
               </label>
               <div className="relative">
                 <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-neutral-400">
@@ -198,7 +194,7 @@ export const EditTicketModal: React.FC<EditTicketModalProps> = ({
                   type="text"
                   value={delNoteNumber}
                   onChange={(e) => setDelNoteNumber(e.target.value.toUpperCase())}
-                  required
+                  placeholder="e.g. A1DD00001 (Optional)"
                   className="w-full pl-9 pr-3 py-2 text-xs font-black uppercase rounded-xl border border-neutral-300 focus:ring-2 focus:ring-blue-500 focus:outline-none bg-white font-mono"
                 />
               </div>

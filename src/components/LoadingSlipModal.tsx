@@ -115,7 +115,7 @@ export const LoadingSlipModal: React.FC<LoadingSlipModalProps> = ({
     : storeInchargeSignatureDataUrl || plantSettings.storeInchargeSignatureDataUrl || '';
 
   const [delNoteNumber, setDelNoteNumber] = useState<string>(
-    existingSlip?.delNoteNumber || ticket.delNoteNumber || 'A1DD00001'
+    existingSlip?.delNoteNumber || ticket.delNoteNumber || ''
   );
   const [placeName, setPlaceName] = useState<string>(
     existingSlip?.placeName || ticket.destinationPlace || (isExFactory ? 'EX-FACTORY' : '')
@@ -492,12 +492,6 @@ export const LoadingSlipModal: React.FC<LoadingSlipModalProps> = ({
       }
       return;
     }
-    if (!delNoteNumber.trim()) {
-      setValidationError('Please enter Delivery Note / Challan Number!');
-      delNoteInputRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
-      delNoteInputRef.current?.focus();
-      return;
-    }
     if (!placeName.trim()) {
       setValidationError('Please enter Destination Place / Unloading Point!');
       placeNameInputRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
@@ -593,7 +587,7 @@ export const LoadingSlipModal: React.FC<LoadingSlipModalProps> = ({
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 bg-neutral-50 p-3.5 rounded-xl border border-neutral-200">
             <div>
               <label className="text-xs font-bold text-neutral-700 block mb-1">
-                Delivery Note Number (Del Note No.) *
+                Delivery Note Number (Del Note No.) (Optional)
               </label>
               <input
                 ref={delNoteInputRef}
@@ -603,10 +597,8 @@ export const LoadingSlipModal: React.FC<LoadingSlipModalProps> = ({
                   setDelNoteNumber(e.target.value);
                   if (validationError) setValidationError(null);
                 }}
-                placeholder={`e.g. ${plantSettings.ticketPrefix}-2026/0000000001`}
-                className={`w-full px-3 py-1.5 text-sm font-semibold rounded-lg border focus:ring-2 focus:ring-blue-500 focus:outline-none bg-white ${
-                  validationError && !delNoteNumber.trim() ? 'border-red-500 ring-2 ring-red-200' : 'border-neutral-300'
-                }`}
+                placeholder={`e.g. ${plantSettings.ticketPrefix}-2026/0000000001 (Optional)`}
+                className="w-full px-3 py-1.5 text-sm font-semibold rounded-lg border border-neutral-300 focus:ring-2 focus:ring-blue-500 focus:outline-none bg-white"
               />
             </div>
             <div>

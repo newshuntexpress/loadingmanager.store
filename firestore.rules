@@ -491,7 +491,7 @@ service cloud.firestore {
         data.id == entryId &&
         isValidPlantCode(data.plantId) &&
         data.entryDate is string && data.entryDate.size() == 10 && data.entryDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$') &&
-        data.delNoteNumber is string && data.delNoteNumber.size() >= 1 && data.delNoteNumber.size() <= 64 &&
+        data.delNoteNumber is string && data.delNoteNumber.size() <= 64 &&
         data.customerName is string && data.customerName.size() >= 1 && data.customerName.size() <= 160 &&
         (!('loadingType' in data) || (data.loadingType is string && data.loadingType.size() <= 16 && data.loadingType in ['local', 'export', 'sto'])) &&
         data.truckNumber is string && data.truckNumber.size() >= 1 && data.truckNumber.size() <= 40 &&

@@ -2267,10 +2267,6 @@ app.post(
       return;
     }
 
-    if (!payload.delNoteNumber || !String(payload.delNoteNumber).trim()) {
-      res.status(400).json({ error: 'Delivery Note Number (Del Note No.) is required.' });
-      return;
-    }
     if (!payload.truckNumber || !String(payload.truckNumber).trim()) {
       res.status(400).json({ error: 'Vehicle / Truck Number is required.' });
       return;

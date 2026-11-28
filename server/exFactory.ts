@@ -165,10 +165,6 @@ exFactoryRouter.post('/', requirePermission('ex_factory.create'), requireCsrf, (
   const mobileNumber = upperStr(b.mobileNumber);
   const iqamaNumber = upperStr(b.iqamaNumber);
 
-  if (!delNoteNumber) {
-    res.status(400).json({ error: 'Del Note No. is required.' });
-    return;
-  }
   if (!customerName) {
     res.status(400).json({ error: 'Customer Name is required.' });
     return;
@@ -242,8 +238,8 @@ exFactoryRouter.put('/:id', requirePermission('ex_factory.update'), requireCsrf,
   const mobileNumber = upperStr(b.mobileNumber);
   const iqamaNumber = upperStr(b.iqamaNumber);
 
-  if (!delNoteNumber || !customerName || !truckNumber) {
-    res.status(400).json({ error: 'Del Note No., Customer Name, and Truck No. are required.' });
+  if (!customerName || !truckNumber) {
+    res.status(400).json({ error: 'Customer Name and Truck No. are required.' });
     return;
   }
 
@@ -295,12 +291,8 @@ exFactoryRouter.put(
       return;
     }
 
-    const slipDelNote = upperStr(rawSlip.delNoteNumber || existing.del_note_number);
+    const slipDelNote = upperStr(rawSlip.delNoteNumber ?? existing.del_note_number ?? '');
     const slipPlace = upperStr(rawSlip.placeName);
-    if (!slipDelNote) {
-      res.status(400).json({ error: 'Delivery Note Number is required on loading slip.' });
-      return;
-    }
     if (!slipPlace) {
       res.status(400).json({ error: 'Destination Place is required on loading slip.' });
       return;

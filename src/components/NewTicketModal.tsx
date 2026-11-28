@@ -127,7 +127,7 @@ export const NewTicketModal: React.FC<NewTicketModalProps> = ({
     StorageService.generateTicketNumber(date, StorageService.getNextDailySequence(date, plantId), plantId)
   );
 
-  // Mandatory Delivery Note Number (Del Note No.)
+  // Optional Delivery Note Number (Del Note No.)
   const [delNoteNumber, setDelNoteNumber] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -581,14 +581,6 @@ export const NewTicketModal: React.FC<NewTicketModalProps> = ({
   ) => {
     if (submitting) return;
     setFormError(null);
-    if (!delNoteNumber.trim()) {
-      setFormError(
-        'Please enter Delivery Note Number (Del Note No.) * e.g. A1DD00001. Ticket cannot be created without it.'
-      );
-      delNoteInputRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
-      delNoteInputRef.current?.focus();
-      return;
-    }
     if (!truckNumber.trim()) {
       setFormError('Please enter Vehicle / Truck Number!');
       return;
@@ -787,15 +779,15 @@ export const NewTicketModal: React.FC<NewTicketModalProps> = ({
 
         {/* Form Body */}
         <div className="p-4 sm:p-5 space-y-4 max-h-[78vh] overflow-y-auto">
-          {/* Delivery Note Number (Del Note No.) * - MANDATORY */}
-          <div className="bg-amber-50/70 p-3 rounded-xl border border-amber-300">
+          {/* Delivery Note Number (Del Note No.) - Optional */}
+          <div className="bg-neutral-50 p-3 rounded-xl border border-neutral-200">
             <div className="flex items-center justify-between mb-1">
-              <label className="text-xs font-black text-amber-950 tracking-wide flex items-center gap-1.5">
-                <FileText className="w-4 h-4 text-amber-700" />
-                <span>Delivery Note Number (Del Note No.) *</span>
+              <label className="text-xs font-bold text-neutral-800 tracking-wide flex items-center gap-1.5">
+                <FileText className="w-4 h-4 text-blue-600" />
+                <span>Delivery Note Number (Del Note No.)</span>
               </label>
-              <span className="text-[10px] font-extrabold text-amber-800 bg-amber-100 px-2 py-0.5 rounded border border-amber-300">
-                Required
+              <span className="text-[10px] font-bold text-neutral-600 bg-neutral-200/70 px-2 py-0.5 rounded border border-neutral-300">
+                Optional
               </span>
             </div>
             <input
@@ -806,13 +798,9 @@ export const NewTicketModal: React.FC<NewTicketModalProps> = ({
                 setDelNoteNumber(e.target.value.toUpperCase());
                 if (formError) setFormError(null);
               }}
-              placeholder="e.g. A1DD00001"
-              required
-              className="w-full px-3 py-2 text-sm font-black uppercase tracking-wider rounded-lg border border-amber-400 focus:ring-2 focus:ring-amber-500 focus:outline-none bg-white shadow-xs font-mono text-neutral-900"
+              placeholder="e.g. A1DD00001 (Optional)"
+              className="w-full px-3 py-2 text-sm font-black uppercase tracking-wider rounded-lg border border-neutral-300 focus:ring-2 focus:ring-blue-500 focus:outline-none bg-white shadow-xs font-mono text-neutral-900"
             />
-            <p className="text-[10.5px] text-amber-900 font-medium mt-1">
-              ⚠️ Without entering Delivery Note Number (e.g. A1DD00001), ticket cannot be created.
-            </p>
           </div>
 
           {/* Truck Number with Autocomplete */}

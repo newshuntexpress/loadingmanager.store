@@ -2280,11 +2280,11 @@ export const ApiClient = {
   }): Promise<ExFactoryEntry> {
     return withStaticFallback(
       async () => {
-        const delNoteNumber = payload.delNoteNumber.trim().toUpperCase();
+        const delNoteNumber = (payload.delNoteNumber || '').trim().toUpperCase();
         const customerName = payload.customerName.trim().toUpperCase();
         const truckNumber = payload.truckNumber.trim().toUpperCase();
-        if (!delNoteNumber || !customerName || !truckNumber) {
-          throw new ApiError('Del Note No., Customer Name, and Truck No. are required.', 400);
+        if (!customerName || !truckNumber) {
+          throw new ApiError('Customer Name and Truck No. are required.', 400);
         }
         const now = Date.now();
         const actor = getStaticActorUsername();
@@ -2343,11 +2343,11 @@ export const ApiClient = {
         if (!existing) {
           throw new ApiError('Ex-Factory entry not found.', 404);
         }
-        const delNoteNumber = payload.delNoteNumber.trim().toUpperCase();
+        const delNoteNumber = (payload.delNoteNumber || '').trim().toUpperCase();
         const customerName = payload.customerName.trim().toUpperCase();
         const truckNumber = payload.truckNumber.trim().toUpperCase();
-        if (!delNoteNumber || !customerName || !truckNumber) {
-          throw new ApiError('Del Note No., Customer Name, and Truck No. are required.', 400);
+        if (!customerName || !truckNumber) {
+          throw new ApiError('Customer Name and Truck No. are required.', 400);
         }
         const rawDate = String(payload.entryDate || '').trim();
         const updated: ExFactoryEntry = {
@@ -2425,10 +2425,10 @@ export const ApiClient = {
         }
         const persistedUser = getPersistedLoginState().user;
         const actorName = getStaticActorName();
-        const slipDelNote = (payload.loadingSlip.delNoteNumber || existing.delNoteNumber).trim().toUpperCase();
+        const slipDelNote = (payload.loadingSlip.delNoteNumber || existing.delNoteNumber || '').trim().toUpperCase();
         const slipPlace = (payload.loadingSlip.placeName || '').trim().toUpperCase();
-        if (!slipDelNote || !slipPlace) {
-          throw new ApiError('Delivery Note Number and Destination Place are required on loading slip.', 400);
+        if (!slipPlace) {
+          throw new ApiError('Destination Place is required on loading slip.', 400);
         }
         const updatedSlip: LoadingSlipData = {
           ...payload.loadingSlip,
