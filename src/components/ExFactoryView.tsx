@@ -1577,17 +1577,15 @@ export const ExFactoryView: React.FC<ExFactoryViewProps> = ({
                               <span>{slip ? 'Edit Slip' : 'Create Slip'}</span>
                             </button>
                           )}
-                          {slip && (
-                            <button
-                              type="button"
-                              onClick={() => setActiveEntryForPrintSlip({ entry: item, srNo: idx + 1 })}
-                              className="app-btn-sm bg-[#354A5F] hover:bg-[#243647] text-white shadow-xs"
-                              title="Print 2-Copy A4 Single Sheet Preview"
-                            >
-                              <Printer className="w-3.5 h-3.5 text-[#F0AB00] shrink-0" />
-                              <span>Print Slip</span>
-                            </button>
-                          )}
+                          <button
+                            type="button"
+                            onClick={() => setActiveEntryForPrintSlip({ entry: item, srNo: idx + 1 })}
+                            className="app-btn-sm bg-[#354A5F] hover:bg-[#243647] text-white shadow-xs"
+                            title="Print 2-Copy A4 Single Sheet Preview"
+                          >
+                            <Printer className="w-3.5 h-3.5 text-[#F0AB00] shrink-0" />
+                            <span>Print Slip</span>
+                          </button>
                           <button
                             type="button"
                             onClick={() => handleCopySingleRow(item)}

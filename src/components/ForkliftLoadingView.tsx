@@ -995,7 +995,7 @@ export const ForkliftLoadingView: React.FC<ForkliftLoadingViewProps> = ({
                       </div>
                     </div>
 
-                    <div className={canPrint && ticket.loadingSlip ? 'grid grid-cols-[1fr_auto] gap-2' : ''}>
+                    <div className="grid grid-cols-[1fr_auto] gap-2">
                       <button
                         type="button"
                         disabled={openingId === ticket.id}
@@ -1015,17 +1015,15 @@ export const ForkliftLoadingView: React.FC<ForkliftLoadingViewProps> = ({
                           {ticket.status === 'under_loading' ? 'Continue Loading Checklist' : 'Open Loading Slip'}
                         </span>
                       </button>
-                      {canPrint && ticket.loadingSlip && (
-                        <button
-                          type="button"
-                          onClick={() => onPrintLoadingSlip(ticket)}
-                          className="app-btn bg-[#354A5F] hover:bg-[#243647] text-white px-3"
-                          title="Print 2-Copy A4 Loading Slip"
-                        >
-                          <Printer className="w-4 h-4 text-[#F0AB00] shrink-0" />
-                          <span>Print</span>
-                        </button>
-                      )}
+                      <button
+                        type="button"
+                        onClick={() => onPrintLoadingSlip(ticket)}
+                        className="app-btn bg-[#354A5F] hover:bg-[#243647] text-white px-3"
+                        title="Print 2-Copy A4 Loading Slip"
+                      >
+                        <Printer className="w-4 h-4 text-[#F0AB00] shrink-0" />
+                        <span>Print</span>
+                      </button>
                     </div>
                   </div>
                 );
@@ -1088,16 +1086,14 @@ export const ForkliftLoadingView: React.FC<ForkliftLoadingViewProps> = ({
                         <Lock className="w-3.5 h-3.5 text-[#107E3E] shrink-0" />
                         <span>View Locked Slip</span>
                       </button>
-                      {canPrint && (
-                        <button
-                          type="button"
-                          onClick={() => onPrintLoadingSlip(ticket)}
-                          className="app-btn-sm w-full bg-[#354A5F] hover:bg-[#243647] text-white"
-                        >
-                          <Printer className="w-3.5 h-3.5 text-[#F0AB00] shrink-0" />
-                          <span>Print Slip</span>
-                        </button>
-                      )}
+                      <button
+                        type="button"
+                        onClick={() => onPrintLoadingSlip(ticket)}
+                        className="app-btn-sm w-full bg-[#354A5F] hover:bg-[#243647] text-white"
+                      >
+                        <Printer className="w-3.5 h-3.5 text-[#F0AB00] shrink-0" />
+                        <span>Print Slip</span>
+                      </button>
                     </div>
                   </div>
                 );

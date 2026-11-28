@@ -527,10 +527,7 @@ export const GateQueueDashboard: React.FC<GateQueueDashboardProps> = ({
                       </div>
 
                       {/* Action buttons */}
-                      {(canUpdate ||
-                        (canPrint &&
-                          Boolean(onPrintLoadingSlip) &&
-                          Boolean(currentLoading.loadingSlip || currentLoading.delNoteNumber))) && (
+                      {(canUpdate || Boolean(onPrintLoadingSlip)) && (
                         <div className="grid grid-cols-2 gap-2 pt-2.5 border-t border-[#F3B780]/70">
                           {canUpdate && (
                             <button
@@ -539,7 +536,7 @@ export const GateQueueDashboard: React.FC<GateQueueDashboardProps> = ({
                               className="app-btn-sm w-full bg-white hover:bg-[#EFF4F9] text-[#354A5F] border border-[#BCC8D4]"
                             >
                               <FileText className="w-3.5 h-3.5 text-[#0A6ED1] shrink-0" />
-                              <span>Edit / Print Slip</span>
+                              <span>Edit Slip</span>
                             </button>
                           )}
                           {canUpdate && (
@@ -552,19 +549,16 @@ export const GateQueueDashboard: React.FC<GateQueueDashboardProps> = ({
                               <span>Complete</span>
                             </button>
                           )}
-                          {!canUpdate &&
-                            canPrint &&
-                            onPrintLoadingSlip &&
-                            (currentLoading.loadingSlip || currentLoading.delNoteNumber) && (
-                              <button
-                                type="button"
-                                onClick={() => onPrintLoadingSlip(currentLoading)}
-                                className="app-btn-sm col-span-2 w-full bg-[#354A5F] hover:bg-[#243647] text-white"
-                              >
-                                <Printer className="w-3.5 h-3.5 text-[#F0AB00] shrink-0" />
-                                <span>Print Slip</span>
-                              </button>
-                            )}
+                          {onPrintLoadingSlip && (
+                            <button
+                              type="button"
+                              onClick={() => onPrintLoadingSlip(currentLoading)}
+                              className="app-btn-sm col-span-2 w-full bg-[#354A5F] hover:bg-[#243647] text-white"
+                            >
+                              <Printer className="w-3.5 h-3.5 text-[#F0AB00] shrink-0" />
+                              <span>Print Slip</span>
+                            </button>
+                          )}
                         </div>
                       )}
                     </div>

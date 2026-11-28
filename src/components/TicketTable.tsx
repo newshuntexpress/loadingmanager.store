@@ -165,15 +165,14 @@ export const TicketTable: React.FC<TicketTableProps> = ({
                   {/* Ticket Number*/ }
                   <td className="py-3.5 px-3.5">
                     <span className="font-extrabold text-[#0A6ED1] block font-mono text-[13px]">{t.ticketNumber}</span>
-                    {canPrint && (
-                      <button
-                        onClick={() => onPrintTicket(t)}
-                        className="text-[11px] text-[#5B738B] hover:text-[#0A6ED1] font-semibold inline-flex items-center gap-1 cursor-pointer mt-1"
-                      >
-                        <Printer className="w-3.5 h-3.5" />
-                        <span>Print Token</span>
-                      </button>
-                    )}
+                    <button
+                      type="button"
+                      onClick={() => onPrintTicket(t)}
+                      className="text-[11px] text-[#5B738B] hover:text-[#0A6ED1] font-semibold inline-flex items-center gap-1 cursor-pointer mt-1"
+                    >
+                      <Printer className="w-3.5 h-3.5" />
+                      <span>Print Token</span>
+                    </button>
                   </td>
 
                   {/* Gate Number & Gate Sequence Number*/ }
@@ -354,17 +353,15 @@ export const TicketTable: React.FC<TicketTableProps> = ({
                       )}
 
                       {/* Print 2-Copy A4 Slip */}
-                      {canPrint && (slip || t.delNoteNumber) && (
-                        <button
-                          type="button"
-                          onClick={() => onPrintLoadingSlip(t)}
-                          className="app-btn-sm bg-[#354A5F] hover:bg-[#243647] text-white shadow-xs"
-                          title="Print 2-Copy A4 Single Sheet Preview"
-                        >
-                          <Printer className="w-3.5 h-3.5 text-[#F0AB00] shrink-0" />
-                          <span>Print Slip</span>
-                        </button>
-                      )}
+                      <button
+                        type="button"
+                        onClick={() => onPrintLoadingSlip(t)}
+                        className="app-btn-sm bg-[#354A5F] hover:bg-[#243647] text-white shadow-xs"
+                        title="Print 2-Copy A4 Single Sheet Preview"
+                      >
+                        <Printer className="w-3.5 h-3.5 text-[#F0AB00] shrink-0" />
+                        <span>Print Slip</span>
+                      </button>
 
                       {/* Edit Ticket & Change Gate */}
                       {canUpdate && (

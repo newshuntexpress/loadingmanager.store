@@ -138,7 +138,6 @@ function getDefaultTabForUser(user: AuthUser): AppTab {
     perms.includes('tickets.create') ||
     perms.includes('tickets.update') ||
     perms.includes('tickets.delete') ||
-    perms.includes('slips.print') ||
     perms.includes('reports.view') ||
     perms.includes('drivers.manage') ||
     perms.includes('settings.manage');

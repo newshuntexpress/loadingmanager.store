@@ -519,6 +519,25 @@
         "version": {
           "type": "number"
         },
+        "autoLoadingMinutes": {
+          "type": "number"
+        },
+        "autoUnderLoadingAt": {
+          "type": "number"
+        },
+        "autoStatusUpdatedAt": {
+          "type": "number"
+        },
+        "autoUnderLoadingApplied": {
+          "type": "boolean"
+        },
+        "manualStatusOverride": {
+          "type": "boolean"
+        },
+        "driverStatusToken": {
+          "type": "string",
+          "maxLength": 256
+        },
         "ownerUid": {
           "type": "string",
           "minLength": 1,

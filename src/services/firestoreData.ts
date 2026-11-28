@@ -105,6 +105,12 @@ const ALLOWED_GATE_TICKET_KEYS = new Set([
   'remarks',
   'priority',
   'version',
+  'autoLoadingMinutes',
+  'autoUnderLoadingAt',
+  'autoStatusUpdatedAt',
+  'autoUnderLoadingApplied',
+  'manualStatusOverride',
+  'driverStatusToken',
   'ownerUid',
   'isSharedPlant',
   'createdBy',
@@ -259,6 +265,24 @@ function buildTicketMutableFields(ticket: TicketRecord, actorLabel: string): Rec
   if (typeof ticket.version === 'number' && Number.isFinite(ticket.version)) {
     fields.version = ticket.version;
   }
+  if (typeof ticket.autoLoadingMinutes === 'number' && Number.isFinite(ticket.autoLoadingMinutes)) {
+    fields.autoLoadingMinutes = ticket.autoLoadingMinutes;
+  }
+  if (typeof ticket.autoUnderLoadingAt === 'number' && Number.isFinite(ticket.autoUnderLoadingAt)) {
+    fields.autoUnderLoadingAt = ticket.autoUnderLoadingAt;
+  }
+  if (typeof ticket.autoStatusUpdatedAt === 'number' && Number.isFinite(ticket.autoStatusUpdatedAt)) {
+    fields.autoStatusUpdatedAt = ticket.autoStatusUpdatedAt;
+  }
+  if (typeof ticket.autoUnderLoadingApplied === 'boolean') {
+    fields.autoUnderLoadingApplied = ticket.autoUnderLoadingApplied;
+  }
+  if (typeof ticket.manualStatusOverride === 'boolean') {
+    fields.manualStatusOverride = ticket.manualStatusOverride;
+  }
+  if (ticket.driverStatusToken) {
+    fields.driverStatusToken = clampStr(ticket.driverStatusToken, 256);
+  }
 
   return fields;
 }
@@ -299,21 +323,12 @@ export async function saveGateTicketToFirestore(
             date: normalizeDateStr(ticket.date),
             timeIn: clampStr(ticket.timeIn, 32, '00:00:00'),
             ownerUid: uid,
-            createdBy: clampStr(ticket.createdBy || actorLabel, 120),
+            createdBy: clampStr(ticket.createdBy || actorLabel, 120, 'user'),
             ...mutableFields,
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
           };
-          const piiPayload: Record<string, unknown> = {
-            ticketId,
-            ownerUid: uid,
-            driverPhone,
-            ...(iqamaNumber ? { iqamaNumber } : {}),
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          };
           tx.set(ticketRef, createPayload);
-          tx.set(piiRef, piiPayload);
           ticketOwnerUid = uid;
           ticketAlreadyExisted = false;
           return;
@@ -447,11 +462,11 @@ export async function saveGateTicketToFirestore(
       handleFirestoreError(error, currentOp, `gate_tickets/${ticketId}`);
     }
 
-    if (!ticketAlreadyExisted || options?.createOnly) {
+    if (ticketAlreadyExisted && options?.createOnly) {
       return;
     }
 
-    // Update driver PII subcollection when authorized (ticket owner or admin)
+    // Create/update driver PII subcollection after gate_tickets/{ticketId} is committed
     try {
       const piiSnap = await getDoc(piiRef);
       if (piiSnap.exists()) {
@@ -471,7 +486,7 @@ export async function saveGateTicketToFirestore(
         });
       }
     } catch {
-      // Non-owner operators without PII access still save operational gate ticket updates cleanly
+      // Non-owner operators without PII access still save operational gate ticket create/update cleanly
     }
   });
 }

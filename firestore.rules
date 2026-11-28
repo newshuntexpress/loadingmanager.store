@@ -388,6 +388,12 @@ service cloud.firestore {
           'remarks',
           'priority',
           'version',
+          'autoLoadingMinutes',
+          'autoUnderLoadingAt',
+          'autoStatusUpdatedAt',
+          'autoUnderLoadingApplied',
+          'manualStatusOverride',
+          'driverStatusToken',
           'ownerUid',
           'isSharedPlant',
           'createdBy',
@@ -418,6 +424,12 @@ service cloud.firestore {
         (!('remarks' in data) || (data.remarks is string && data.remarks.size() <= 500)) &&
         (!('priority' in data) || (data.priority is string && data.priority.size() <= 16 && data.priority in ['normal', 'urgent'])) &&
         (!('version' in data) || data.version is number) &&
+        (!('autoLoadingMinutes' in data) || data.autoLoadingMinutes is number) &&
+        (!('autoUnderLoadingAt' in data) || data.autoUnderLoadingAt is number) &&
+        (!('autoStatusUpdatedAt' in data) || data.autoStatusUpdatedAt is number) &&
+        (!('autoUnderLoadingApplied' in data) || data.autoUnderLoadingApplied is bool) &&
+        (!('manualStatusOverride' in data) || data.manualStatusOverride is bool) &&
+        (!('driverStatusToken' in data) || (data.driverStatusToken is string && data.driverStatusToken.size() <= 256)) &&
         isValidId(data.ownerUid) &&
         data.isSharedPlant is bool &&
         (!('createdBy' in data) || (data.createdBy is string && data.createdBy.size() <= 120)) &&

@@ -70,7 +70,7 @@ const SECTION_PRESETS: SectionPreset[] = [
     label: 'Forklift Loading Only',
     description: 'Access strictly to Forklift Loading checklists',
     roleName: 'forklift_operator',
-    permissions: ['tickets.view', 'forklift.operate', 'slips.print'],
+    permissions: ['tickets.view', 'forklift.operate'],
   },
   {
     id: 'guard_only',
@@ -84,7 +84,7 @@ const SECTION_PRESETS: SectionPreset[] = [
     label: 'Ex-Factory Only',
     description: 'Access strictly to Ex-Factory Dispatch',
     roleName: 'ex_factory_operator',
-    permissions: ['ex_factory.view', 'ex_factory.create', 'ex_factory.update', 'slips.print'],
+    permissions: ['ex_factory.view', 'ex_factory.create', 'ex_factory.update'],
   },
   {
     id: 'dispatch_operator',
@@ -96,7 +96,6 @@ const SECTION_PRESETS: SectionPreset[] = [
       'tickets.create',
       'tickets.update',
       'guard.view',
-      'slips.print',
       'drivers.manage',
       'materials.view',
       'materials.manage',
@@ -137,7 +136,6 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
     'tickets.create',
     'tickets.update',
     'guard.view',
-    'slips.print',
     'drivers.manage',
     'materials.view',
     'reports.view',
@@ -249,28 +247,28 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
   }, [loadAll]);
 
   const getAllowedPermissionsForRole = (roleName: string): PermissionOption[] => {
-    if (roleName === 'admin') return permissions;
+    const visiblePermissions = permissions.filter((p) => p.key !== 'slips.print');
+    if (roleName === 'admin') return visiblePermissions;
     if (roleName === 'forklift_operator') {
-      return permissions.filter(
-        (p) => p.key === 'tickets.view' || p.key === 'forklift.operate' || p.key === 'slips.print'
+      return visiblePermissions.filter(
+        (p) => p.key === 'tickets.view' || p.key === 'forklift.operate'
       );
     }
     if (roleName === 'liquid_store_operator') {
-      return permissions.filter(
+      return visiblePermissions.filter(
         (p) => p.key === 'liquid.view' || p.key === 'liquid.store' || p.key === 'liquid.materials'
       );
     }
     if (roleName === 'ex_factory_operator') {
-      return permissions.filter((p) => p.key.startsWith('ex_factory.') || p.key === 'slips.print');
+      return visiblePermissions.filter((p) => p.key.startsWith('ex_factory.'));
     }
     if (roleName === 'security_guard') {
-      return permissions.filter((p) => p.key === 'guard.view');
+      return visiblePermissions.filter((p) => p.key === 'guard.view');
     }
     if (roleName === 'view_only') {
       const allowed = new Set([
         'tickets.view',
         'guard.view',
-        'slips.print',
         'materials.view',
         'dispatch.view',
         'material_register.view',
@@ -278,10 +276,10 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
         'liquid.view',
         'ex_factory.view',
       ]);
-      return permissions.filter((p) => allowed.has(p.key));
+      return visiblePermissions.filter((p) => allowed.has(p.key));
     }
     const adminOnly = new Set(['users.manage', 'audit.view', 'settings.manage']);
-    return permissions.filter((p) => !adminOnly.has(p.key));
+    return visiblePermissions.filter((p) => !adminOnly.has(p.key));
   };
 
   const applySectionPreset = (preset: SectionPreset) => {
@@ -294,16 +292,15 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
     if (role === 'liquid_store_operator') {
       setNewSelectedPerms(['liquid.view', 'liquid.store', 'liquid.materials']);
     } else if (role === 'forklift_operator') {
-      setNewSelectedPerms(['tickets.view', 'forklift.operate', 'slips.print']);
+      setNewSelectedPerms(['tickets.view', 'forklift.operate']);
     } else if (role === 'security_guard') {
       setNewSelectedPerms(['guard.view']);
     } else if (role === 'ex_factory_operator') {
-      setNewSelectedPerms(['ex_factory.view', 'ex_factory.create', 'ex_factory.update', 'slips.print']);
+      setNewSelectedPerms(['ex_factory.view', 'ex_factory.create', 'ex_factory.update']);
     } else if (role === 'view_only') {
       setNewSelectedPerms([
         'tickets.view',
         'guard.view',
-        'slips.print',
         'materials.view',
         'dispatch.view',
         'material_register.view',
@@ -312,14 +309,13 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
         'ex_factory.view',
       ]);
     } else if (role === 'admin') {
-      setNewSelectedPerms(permissions.map((p) => p.key));
+      setNewSelectedPerms(permissions.filter((p) => p.key !== 'slips.print').map((p) => p.key));
     } else {
       setNewSelectedPerms([
         'tickets.view',
         'tickets.create',
         'tickets.update',
         'guard.view',
-        'slips.print',
         'drivers.manage',
         'materials.view',
         'materials.manage',
