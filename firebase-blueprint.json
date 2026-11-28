@@ -481,6 +481,14 @@
           "minLength": 1,
           "maxLength": 120
         },
+        "driverPhone": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "iqamaNumber": {
+          "type": "string",
+          "maxLength": 40
+        },
         "transporterName": {
           "type": "string",
           "maxLength": 120

@@ -31,6 +31,7 @@ interface GateQueueDashboardProps {
   onCompleteLoading: (ticket: TicketRecord) => void;
   onOpenLoadingSlip: (ticket: TicketRecord) => void;
   onPrintLoadingSlip?: (ticket: TicketRecord) => void;
+  onPrintTicket?: (ticket: TicketRecord) => void;
   onOpenWhatsApp: (ticket: TicketRecord, templateId?: string) => void;
   canUpdate?: boolean;
   canPrint?: boolean;
@@ -140,9 +141,9 @@ export const GateQueueDashboard: React.FC<GateQueueDashboardProps> = ({
   onCompleteLoading,
   onOpenLoadingSlip,
   onPrintLoadingSlip,
+  onPrintTicket,
   onOpenWhatsApp,
   canUpdate = true,
-  canPrint = true,
 }) => {
   const [showCancelledModal, setShowCancelledModal] = useState(false);
   const [truckBreakdownFilter, setTruckBreakdownFilter] = useState<'all' | 'local' | 'export' | 'sto' | null>(null);
@@ -527,7 +528,7 @@ export const GateQueueDashboard: React.FC<GateQueueDashboardProps> = ({
                       </div>
 
                       {/* Action buttons */}
-                      {(canUpdate || Boolean(onPrintLoadingSlip)) && (
+                      {(canUpdate || Boolean(onPrintLoadingSlip) || Boolean(onPrintTicket)) && (
                         <div className="grid grid-cols-2 gap-2 pt-2.5 border-t border-[#F3B780]/70">
                           {canUpdate && (
                             <button
@@ -553,10 +554,21 @@ export const GateQueueDashboard: React.FC<GateQueueDashboardProps> = ({
                             <button
                               type="button"
                               onClick={() => onPrintLoadingSlip(currentLoading)}
-                              className="app-btn-sm col-span-2 w-full bg-[#354A5F] hover:bg-[#243647] text-white"
+                              className={`app-btn-sm ${onPrintTicket ? 'w-full' : 'col-span-2 w-full'} bg-[#354A5F] hover:bg-[#243647] text-white`}
                             >
                               <Printer className="w-3.5 h-3.5 text-[#F0AB00] shrink-0" />
                               <span>Print Slip</span>
+                            </button>
+                          )}
+                          {onPrintTicket && (
+                            <button
+                              type="button"
+                              onClick={() => onPrintTicket(currentLoading)}
+                              className={`app-btn-sm ${onPrintLoadingSlip ? 'w-full' : 'col-span-2 w-full'} bg-white hover:bg-[#EFF4F9] text-[#354A5F] border border-[#BCC8D4]`}
+                              title="Print Gate Token"
+                            >
+                              <Printer className="w-3.5 h-3.5 text-[#0A6ED1] shrink-0" />
+                              <span>Print Token</span>
                             </button>
                           )}
                         </div>
@@ -592,7 +604,7 @@ export const GateQueueDashboard: React.FC<GateQueueDashboardProps> = ({
                         </span>
                       </div>
 
-                      <div className="flex items-center gap-2 mt-2.5">
+                      <div className="flex flex-wrap items-center gap-1.5 mt-2.5">
                         {canUpdate && (
                           <button
                             type="button"
@@ -601,6 +613,26 @@ export const GateQueueDashboard: React.FC<GateQueueDashboardProps> = ({
                           >
                             <Play className="w-3.5 h-3.5 shrink-0" />
                             <span>Start Loading</span>
+                          </button>
+                        )}
+                        {onPrintTicket && (
+                          <button
+                            type="button"
+                            onClick={() => onPrintTicket(calledTruck)}
+                            className="app-btn-sm !px-2.5 bg-white hover:bg-[#EFF4F9] text-[#354A5F] border border-[#BCC8D4]"
+                            title="Print Gate Token"
+                          >
+                            <Printer className="w-3.5 h-3.5 text-[#0A6ED1] shrink-0" />
+                          </button>
+                        )}
+                        {onPrintLoadingSlip && (
+                          <button
+                            type="button"
+                            onClick={() => onPrintLoadingSlip(calledTruck)}
+                            className="app-btn-sm !px-2.5 bg-[#354A5F] hover:bg-[#243647] text-white"
+                            title="Print Loading Slip"
+                          >
+                            <Printer className="w-3.5 h-3.5 text-[#F0AB00] shrink-0" />
                           </button>
                         )}
                         <button
@@ -647,6 +679,16 @@ export const GateQueueDashboard: React.FC<GateQueueDashboardProps> = ({
                           </div>
 
                           <div className="flex items-center gap-1.5 shrink-0">
+                            {onPrintTicket && (
+                              <button
+                                type="button"
+                                onClick={() => onPrintTicket(truck)}
+                                className="app-btn-sm !px-2 bg-white hover:bg-[#EFF4F9] text-[#354A5F] border border-[#CBD8E6]"
+                                title="Print Gate Token"
+                              >
+                                <Printer className="w-3.5 h-3.5 text-[#0A6ED1] shrink-0" />
+                              </button>
+                            )}
                             <button
                               type="button"
                               onClick={() => onOpenWhatsApp(truck, 'gate_call')}

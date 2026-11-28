@@ -453,7 +453,6 @@ export default function App() {
     (isAdmin || canViewExFactory || canCreateExFactory || canUpdateExFactory || canDeleteExFactory);
   const canDeleteTickets =
     !isForkliftRole && !isLiquidStoreRole && !isExFactoryRole && !isSecurityGuardRole && hasPerm('tickets.delete');
-  const canPrintSlips = Boolean(currentUser);
   const canManageDrivers =
     !isForkliftRole && !isLiquidStoreRole && !isExFactoryRole && !isSecurityGuardRole && hasPerm('drivers.manage');
   const canViewReports =
@@ -2830,7 +2829,7 @@ export default function App() {
                   </div>
 
                   <div className="flex items-center gap-2 shrink-0 justify-end">
-                    {canPrintSlips && matchedTicket && (
+                    {matchedTicket && (
                       <button
                         type="button"
                         onClick={() => setActiveTicketForPrintSlip(matchedTicket)}
@@ -2955,9 +2954,9 @@ export default function App() {
             onCompleteLoading={handleCompleteLoading}
             onOpenLoadingSlip={(t) => setActiveTicketForSlip(t)}
             onPrintLoadingSlip={(t) => setActiveTicketForPrintSlip(t)}
+            onPrintTicket={(t) => setActiveTicketForPrintTicket(t)}
             onOpenWhatsApp={(t, templateId) => setActiveTicketForWhatsApp({ ticket: t, templateId })}
             canUpdate={canUpdateTickets}
-            canPrint={canPrintSlips}
           />
         )}
 
@@ -2991,7 +2990,6 @@ export default function App() {
             onDeleteTicket={handleDeleteTicket}
             canUpdate={canUpdateTickets}
             canDelete={canDeleteTickets}
-            canPrint={canPrintSlips}
           />
         )}
 
@@ -3038,7 +3036,6 @@ export default function App() {
               tickets={dayTickets}
               settings={operationalSettings}
               currentUser={currentUser}
-              canPrint={canPrintSlips}
               onTicketsRefresh={loadData}
               onLoadingCompleted={(updatedTicket, alert) => {
                 if (isFirestoreActive && !isStaticFirebaseOnlyMode()) {
@@ -3093,7 +3090,6 @@ export default function App() {
               canCreate={canCreateExFactory}
               canUpdate={canUpdateExFactory}
               canDelete={canDeleteExFactory}
-              canPrint={canPrintSlips}
             />
           ) : (
             <div className="bg-white border border-amber-200 rounded-2xl p-8 text-center space-y-2 shadow-sm">

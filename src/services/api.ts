@@ -121,7 +121,6 @@ export const CANONICAL_PERMISSIONS: PermissionOption[] = [
   { id: 'perm_forklift_operate', key: 'forklift.operate', name: 'Forklift Operator Loading Checklist & Completion', category: 'Operations' },
   { id: 'perm_tickets_delete', key: 'tickets.delete', name: 'Delete Ticket Records', category: 'Operations' },
   { id: 'perm_guard_view', key: 'guard.view', name: 'View Security Guard Gate Truck Allotment Screen', category: 'Operations' },
-  { id: 'perm_slips_print', key: 'slips.print', name: 'Print & Export Loading Slips / Tokens', category: 'Documents' },
   { id: 'perm_drivers_manage', key: 'drivers.manage', name: 'Manage Driver & Vehicle Master Directory', category: 'Operations' },
   { id: 'perm_materials_view', key: 'materials.view', name: 'View Material Master Catalog', category: 'Operations' },
   { id: 'perm_materials_manage', key: 'materials.manage', name: 'Manage Material Master (Add / Edit / Delete / Excel Import)', category: 'Operations' },

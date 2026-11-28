@@ -415,16 +415,14 @@ export const ForkliftLoadingView: React.FC<ForkliftLoadingViewProps> = ({
                 Locked
               </span>
             )}
-            {canPrint && (
-              <button
-                type="button"
-                onClick={() => onPrintLoadingSlip(selectedTicket)}
-                className="app-btn bg-neutral-800 hover:bg-neutral-900 text-white"
-              >
-                <Printer className="w-4 h-4 text-amber-300 shrink-0" />
-                <span>Print Slip</span>
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={() => onPrintLoadingSlip(selectedTicket)}
+              className="app-btn bg-neutral-800 hover:bg-neutral-900 text-white"
+            >
+              <Printer className="w-4 h-4 text-amber-300 shrink-0" />
+              <span>Print Slip</span>
+            </button>
           </div>
         </div>
 

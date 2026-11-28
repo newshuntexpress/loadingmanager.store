@@ -79,6 +79,7 @@ service cloud.firestore {
       return isAdmin() || (
         hasActiveAllowlistDoc() && (
           !('allowedPlants' in callerAllowlistData()) ||
+          callerAllowlistData().allowedPlants.size() == 0 ||
           callerAllowlistData().allowedPlants.hasAny(['ALL', plantId.upper()])
         )
       );
@@ -93,6 +94,7 @@ service cloud.firestore {
         ) &&
         (
           !('permissions' in callerAllowlistData()) ||
+          callerAllowlistData().permissions.size() == 0 ||
           callerAllowlistData().permissions.hasAny(['tickets.update', 'tickets.create', 'forklift.operate'])
         )
       );
@@ -336,16 +338,16 @@ service cloud.firestore {
         slip.totalLooseRolls is number &&
         slip.preparedBy is string && slip.preparedBy.size() <= 120 &&
         slip.checkedBy is string && slip.checkedBy.size() <= 120 &&
-        (!('loadedBy' in slip) || (slip.loadedBy is string && slip.loadedBy.size() <= 120)) &&
-        (!('storeInchargeUserId' in slip) || (slip.storeInchargeUserId is string && slip.storeInchargeUserId.size() <= 128)) &&
-        (!('storeInchargeName' in slip) || (slip.storeInchargeName is string && slip.storeInchargeName.size() <= 120)) &&
-        (!('storeInchargeSignatureDataUrl' in slip) || (slip.storeInchargeSignatureDataUrl is string && slip.storeInchargeSignatureDataUrl.size() <= 300000)) &&
-        (!('driverSignatureNotes' in slip) || (slip.driverSignatureNotes is string && slip.driverSignatureNotes.size() <= 500)) &&
+        (!('loadedBy' in slip) || slip.loadedBy == null || (slip.loadedBy is string && slip.loadedBy.size() <= 120)) &&
+        (!('storeInchargeUserId' in slip) || slip.storeInchargeUserId == null || (slip.storeInchargeUserId is string && slip.storeInchargeUserId.size() <= 128)) &&
+        (!('storeInchargeName' in slip) || slip.storeInchargeName == null || (slip.storeInchargeName is string && slip.storeInchargeName.size() <= 120)) &&
+        (!('storeInchargeSignatureDataUrl' in slip) || slip.storeInchargeSignatureDataUrl == null || (slip.storeInchargeSignatureDataUrl is string && slip.storeInchargeSignatureDataUrl.size() <= 300000)) &&
+        (!('driverSignatureNotes' in slip) || slip.driverSignatureNotes == null || (slip.driverSignatureNotes is string && slip.driverSignatureNotes.size() <= 500)) &&
         slip.createdAt is string && slip.createdAt.size() <= 64 &&
-        (!('isLocked' in slip) || slip.isLocked is bool) &&
-        (!('loadingCompletedAt' in slip) || slip.loadingCompletedAt is number) &&
-        (!('loadingCompletedTime' in slip) || (slip.loadingCompletedTime is string && slip.loadingCompletedTime.size() <= 32)) &&
-        (!('loadingCompletedBy' in slip) || (slip.loadingCompletedBy is string && slip.loadingCompletedBy.size() <= 120));
+        (!('isLocked' in slip) || slip.isLocked == null || slip.isLocked is bool) &&
+        (!('loadingCompletedAt' in slip) || slip.loadingCompletedAt == null || slip.loadingCompletedAt is number) &&
+        (!('loadingCompletedTime' in slip) || slip.loadingCompletedTime == null || (slip.loadingCompletedTime is string && slip.loadingCompletedTime.size() <= 32)) &&
+        (!('loadingCompletedBy' in slip) || slip.loadingCompletedBy == null || (slip.loadingCompletedBy is string && slip.loadingCompletedBy.size() <= 120));
     }
 
     function isValidGateTicket(data, ticketId) {
@@ -379,6 +381,8 @@ service cloud.firestore {
           'gateSequenceNumber',
           'truckNumber',
           'driverName',
+          'driverPhone',
+          'iqamaNumber',
           'transporterName',
           'destinationPlace',
           'loadingType',
@@ -403,37 +407,39 @@ service cloud.firestore {
         ]) &&
         isValidId(data.id) &&
         data.id == ticketId &&
-        (!('plantId' in data) || isValidPlantCode(data.plantId)) &&
+        (!('plantId' in data) || data.plantId == null || data.plantId == '' || isValidPlantCode(data.plantId)) &&
         data.ticketNumber is string && data.ticketNumber.size() >= 1 && data.ticketNumber.size() <= 64 &&
         data.sequenceNumber is number && data.sequenceNumber >= 0 &&
         data.date is string && data.date.size() == 10 && data.date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$') &&
         data.timeIn is string && data.timeIn.size() <= 32 &&
-        (!('timeCalled' in data) || (data.timeCalled is string && data.timeCalled.size() <= 32)) &&
-        (!('timeLoadingStarted' in data) || (data.timeLoadingStarted is string && data.timeLoadingStarted.size() <= 32)) &&
-        (!('timeCompleted' in data) || (data.timeCompleted is string && data.timeCompleted.size() <= 32)) &&
+        (!('timeCalled' in data) || data.timeCalled == null || (data.timeCalled is string && data.timeCalled.size() <= 32)) &&
+        (!('timeLoadingStarted' in data) || data.timeLoadingStarted == null || (data.timeLoadingStarted is string && data.timeLoadingStarted.size() <= 32)) &&
+        (!('timeCompleted' in data) || data.timeCompleted == null || (data.timeCompleted is string && data.timeCompleted.size() <= 32)) &&
         data.gateNumber is string && data.gateNumber.size() >= 1 && data.gateNumber.size() <= 40 &&
         data.gateSequenceNumber is number && data.gateSequenceNumber >= 0 &&
         data.truckNumber is string && data.truckNumber.size() >= 1 && data.truckNumber.size() <= 40 &&
         data.driverName is string && data.driverName.size() >= 1 && data.driverName.size() <= 120 &&
-        (!('transporterName' in data) || (data.transporterName is string && data.transporterName.size() <= 120)) &&
-        (!('destinationPlace' in data) || (data.destinationPlace is string && data.destinationPlace.size() <= 160)) &&
-        (!('loadingType' in data) || (data.loadingType is string && data.loadingType.size() <= 16 && data.loadingType in ['local', 'export', 'sto'])) &&
-        (!('delNoteNumber' in data) || (data.delNoteNumber is string && data.delNoteNumber.size() <= 64)) &&
+        (!('driverPhone' in data) || data.driverPhone == null || (data.driverPhone is string && data.driverPhone.size() <= 32)) &&
+        (!('iqamaNumber' in data) || data.iqamaNumber == null || (data.iqamaNumber is string && data.iqamaNumber.size() <= 40)) &&
+        (!('transporterName' in data) || data.transporterName == null || (data.transporterName is string && data.transporterName.size() <= 120)) &&
+        (!('destinationPlace' in data) || data.destinationPlace == null || (data.destinationPlace is string && data.destinationPlace.size() <= 160)) &&
+        (!('loadingType' in data) || data.loadingType == null || data.loadingType == '' || (data.loadingType is string && data.loadingType.size() <= 16 && data.loadingType in ['local', 'export', 'sto'])) &&
+        (!('delNoteNumber' in data) || data.delNoteNumber == null || (data.delNoteNumber is string && data.delNoteNumber.size() <= 64)) &&
         data.status is string && data.status.size() <= 24 && data.status in ['waiting', 'called', 'under_loading', 'completed', 'cancelled'] &&
-        (!('loadingSlip' in data) || isValidLoadingSlip(data.loadingSlip)) &&
-        (!('remarks' in data) || (data.remarks is string && data.remarks.size() <= 500)) &&
-        (!('priority' in data) || (data.priority is string && data.priority.size() <= 16 && data.priority in ['normal', 'urgent'])) &&
-        (!('version' in data) || data.version is number) &&
-        (!('autoLoadingMinutes' in data) || data.autoLoadingMinutes is number) &&
-        (!('autoUnderLoadingAt' in data) || data.autoUnderLoadingAt is number) &&
-        (!('autoStatusUpdatedAt' in data) || data.autoStatusUpdatedAt is number) &&
-        (!('autoUnderLoadingApplied' in data) || data.autoUnderLoadingApplied is bool) &&
-        (!('manualStatusOverride' in data) || data.manualStatusOverride is bool) &&
-        (!('driverStatusToken' in data) || (data.driverStatusToken is string && data.driverStatusToken.size() <= 256)) &&
+        (!('loadingSlip' in data) || data.loadingSlip == null || isValidLoadingSlip(data.loadingSlip)) &&
+        (!('remarks' in data) || data.remarks == null || (data.remarks is string && data.remarks.size() <= 500)) &&
+        (!('priority' in data) || data.priority == null || data.priority == '' || (data.priority is string && data.priority.size() <= 16 && data.priority in ['normal', 'urgent'])) &&
+        (!('version' in data) || data.version == null || data.version is number) &&
+        (!('autoLoadingMinutes' in data) || data.autoLoadingMinutes == null || data.autoLoadingMinutes is number) &&
+        (!('autoUnderLoadingAt' in data) || data.autoUnderLoadingAt == null || data.autoUnderLoadingAt is number) &&
+        (!('autoStatusUpdatedAt' in data) || data.autoStatusUpdatedAt == null || data.autoStatusUpdatedAt is number) &&
+        (!('autoUnderLoadingApplied' in data) || data.autoUnderLoadingApplied == null || data.autoUnderLoadingApplied is bool) &&
+        (!('manualStatusOverride' in data) || data.manualStatusOverride == null || data.manualStatusOverride is bool) &&
+        (!('driverStatusToken' in data) || data.driverStatusToken == null || (data.driverStatusToken is string && data.driverStatusToken.size() <= 256)) &&
         isValidId(data.ownerUid) &&
         data.isSharedPlant is bool &&
-        (!('createdBy' in data) || (data.createdBy is string && data.createdBy.size() <= 120)) &&
-        (!('updatedBy' in data) || (data.updatedBy is string && data.updatedBy.size() <= 120)) &&
+        (!('createdBy' in data) || data.createdBy == null || (data.createdBy is string && data.createdBy.size() <= 120)) &&
+        (!('updatedBy' in data) || data.updatedBy == null || (data.updatedBy is string && data.updatedBy.size() <= 120)) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
@@ -445,7 +451,7 @@ service cloud.firestore {
         data.ticketId == ticketId &&
         isValidId(data.ownerUid) &&
         data.driverPhone is string && data.driverPhone.size() <= 32 &&
-        (!('iqamaNumber' in data) || (data.iqamaNumber is string && data.iqamaNumber.size() <= 40)) &&
+        (!('iqamaNumber' in data) || data.iqamaNumber == null || (data.iqamaNumber is string && data.iqamaNumber.size() <= 40)) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }

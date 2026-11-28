@@ -905,7 +905,6 @@ export const ALL_PLANT_PERMISSIONS = [
   'tickets.delete',
   'forklift.operate',
   'guard.view',
-  'slips.print',
   'drivers.manage',
   'materials.view',
   'materials.manage',
@@ -930,7 +929,6 @@ const STANDARD_USER_PERMISSIONS = [
   'tickets.update',
   'forklift.operate',
   'guard.view',
-  'slips.print',
   'drivers.manage',
   'materials.view',
   'materials.manage',
@@ -961,18 +959,17 @@ export function getDefaultPermissionsForRole(roleName: string): string[] {
     case 'admin':
       return ALL_PLANT_PERMISSIONS;
     case 'forklift_operator':
-      return ['tickets.view', 'forklift.operate', 'slips.print'];
+      return ['tickets.view', 'forklift.operate'];
     case 'liquid_store_operator':
       return ['liquid.view', 'liquid.store', 'liquid.materials'];
     case 'ex_factory_operator':
-      return ['ex_factory.view', 'ex_factory.create', 'ex_factory.update', 'slips.print'];
+      return ['ex_factory.view', 'ex_factory.create', 'ex_factory.update'];
     case 'security_guard':
       return ['guard.view'];
     case 'view_only':
       return [
         'tickets.view',
         'guard.view',
-        'slips.print',
         'materials.view',
         'dispatch.view',
         'material_register.view',

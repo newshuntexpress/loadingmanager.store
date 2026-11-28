@@ -11,6 +11,8 @@ import {
   WhatsAppDispatchOutcome,
 } from '../types';
 import { PACK_DROPDOWN_OPTIONS } from './LoadingSlipModal';
+import { TicketPrintView } from './TicketPrintView';
+import { LoadingSlipPrintView } from './LoadingSlipPrintView';
 import { StorageService, getCurrentTimeString, createEmpty8Rows, resolveSettingsForPlant } from '../services/storage';
 import { ApiClient } from '../services/api';
 import { formatSaudiPhoneNumber } from '../utils/whatsapp';
@@ -158,6 +160,7 @@ export const NewTicketModal: React.FC<NewTicketModalProps> = ({
   const createdTicketDraftRef = useRef<TicketRecord | null>(null);
   const delNoteInputRef = useRef<HTMLInputElement | null>(null);
   const destinationInputRef = useRef<HTMLInputElement | null>(null);
+  const [localPrintMode, setLocalPrintMode] = useState<'ticket' | 'slip' | null>(null);
 
   // Material Master catalog hydration
   const [localMaterials, setLocalMaterials] = useState<MaterialMasterRecord[]>(() =>
@@ -721,6 +724,37 @@ export const NewTicketModal: React.FC<NewTicketModalProps> = ({
       setSubmitting(false);
       setPendingAction(null);
     }
+  };
+
+  const buildLocalPreviewTicket = (): TicketRecord => {
+    const now = Date.now();
+    const cleanDelNote = delNoteNumber.trim().toUpperCase();
+    const cleanDest = destinationPlace.trim().toUpperCase();
+    return {
+      ...(createdTicketDraftRef.current || {}),
+      id: createdTicketDraftRef.current?.id || `local_${now}`,
+      plantId,
+      ticketNumber: ticketNumber.toUpperCase(),
+      sequenceNumber: nextSeq,
+      date,
+      timeIn: createdTicketDraftRef.current?.timeIn || getCurrentTimeString(),
+      gateNumber: selectedGate.trim() || 'Gate 1',
+      gateSequenceNumber: gateQueueInfo.myPositionAtGate,
+      delNoteNumber: cleanDelNote,
+      truckNumber: truckNumber.trim().toUpperCase() || 'TRUCK',
+      driverName: driverName.trim().toUpperCase() || 'DRIVER',
+      driverPhone: formatSaudiPhoneNumber(driverPhone),
+      iqamaNumber: iqamaNumber.trim().toUpperCase(),
+      transporterName: transporterName.trim().toUpperCase(),
+      destinationPlace: cleanDest,
+      loadingType,
+      status: markCompleteOnSave ? 'completed' : 'waiting',
+      priority,
+      remarks: remarks.trim().toUpperCase(),
+      loadingSlip: buildSlipData(cleanDelNote, cleanDest),
+      createdAt: createdTicketDraftRef.current?.createdAt || now,
+      updatedAt: now,
+    };
   };
 
   return (
@@ -1600,9 +1634,31 @@ export const NewTicketModal: React.FC<NewTicketModalProps> = ({
           </div>
 
           {formError && (
-            <div className="p-3 bg-red-50 rounded-xl border border-red-200 text-xs font-semibold text-red-800 flex items-center gap-2">
-              <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
-              <span>{formError}</span>
+            <div className="p-3 bg-red-50 rounded-xl border border-red-200 text-xs font-semibold text-red-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+                <span className="break-all">{formError}</span>
+              </div>
+              {truckNumber.trim() && driverName.trim() && (
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setLocalPrintMode('ticket')}
+                    className="app-btn-sm bg-neutral-800 hover:bg-neutral-900 text-white"
+                  >
+                    <Printer className="w-3.5 h-3.5 shrink-0" />
+                    <span>Print Ticket Copy</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLocalPrintMode('slip')}
+                    className="app-btn-sm bg-indigo-700 hover:bg-indigo-600 text-white"
+                  >
+                    <Printer className="w-3.5 h-3.5 shrink-0" />
+                    <span>Print Slip Copy</span>
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
@@ -1763,6 +1819,27 @@ export const NewTicketModal: React.FC<NewTicketModalProps> = ({
           </div>,
           document.body
         )}
+
+      {localPrintMode === 'ticket' && (
+        <TicketPrintView
+          ticket={buildLocalPreviewTicket()}
+          settings={settings}
+          autoPrint={true}
+          onClose={() => setLocalPrintMode(null)}
+        />
+      )}
+
+      {localPrintMode === 'slip' && (
+        <LoadingSlipPrintView
+          ticket={buildLocalPreviewTicket()}
+          settings={settings}
+          currentUserId={currentUserId}
+          storeInchargeFullName={displayStoreInchargeName}
+          storeInchargeSignatureDataUrl={displaySignatureDataUrl}
+          autoPrint={true}
+          onClose={() => setLocalPrintMode(null)}
+        />
+      )}
     </div>
   );
 };
