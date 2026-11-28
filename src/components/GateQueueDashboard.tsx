@@ -150,7 +150,8 @@ export const GateQueueDashboard: React.FC<GateQueueDashboardProps> = ({
 
   const dayTickets = tickets.filter((t) => t.date === date);
 
-  const underLoadingCount = dayTickets.filter((t) => t.status === 'under_loading').length;
+  const underLoadingTickets = dayTickets.filter((t) => t.status === 'under_loading');
+  const underLoadingCount = underLoadingTickets.length;
   const calledCount = dayTickets.filter((t) => t.status === 'called').length;
   const waitingCount = dayTickets.filter((t) => t.status === 'waiting').length;
   const cancelledTickets = dayTickets.filter((t) => t.status === 'cancelled');
@@ -286,15 +287,33 @@ export const GateQueueDashboard: React.FC<GateQueueDashboardProps> = ({
         </div>
 
         <div className="surface-3d surface-3d-hover p-5 rounded-2xl !border-[#F5BA83] flex items-center justify-between gap-3">
-          <div>
-            <span className="text-xs font-extrabold text-[#A64B00] uppercase tracking-wide">
+          <div className="min-w-0">
+            <span className="text-xs font-extrabold text-[#A64B00] uppercase tracking-wide block">
               Under Loading
             </span>
             <p className="text-3xl sm:text-4xl font-black text-[#E9730C] tabular-nums mt-1">
               {underLoadingCount}
             </p>
+            <div className="mt-1.5 flex flex-wrap gap-1">
+              {underLoadingTickets.length > 0 ? (
+                underLoadingTickets.map((t) => (
+                  <span
+                    key={t.id}
+                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#FFF3E6] border border-[#F5BA83] text-[10.5px] font-bold text-[#9A4000]"
+                    title={`${t.gateNumber}: ${t.truckNumber} (${t.ticketNumber})`}
+                  >
+                    <span>{t.gateNumber}:</span>
+                    <span className="font-black text-[#1C2833]">{t.truckNumber}</span>
+                  </span>
+                ))
+              ) : (
+                <span className="text-[11px] font-semibold text-[#A64B00]/75">
+                  No active gate loading
+                </span>
+              )}
+            </div>
           </div>
-          <div className="p-3.5 bg-gradient-to-b from-[#FF9933] to-[#D96300] text-white rounded-xl border border-[#C05400] shadow-[inset_0_1px_0_rgba(255,255,255,0.35),0_4px_0_#9E4300]">
+          <div className="p-3.5 bg-gradient-to-b from-[#FF9933] to-[#D96300] text-white rounded-xl border border-[#C05400] shadow-[inset_0_1px_0_rgba(255,255,255,0.35),0_4px_0_#9E4300] shrink-0">
             <Clock className="w-6 h-6" />
           </div>
         </div>
@@ -449,7 +468,17 @@ export const GateQueueDashboard: React.FC<GateQueueDashboardProps> = ({
 
       {/* Spacious 3D Gate Cards Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-5">
-        {settings.gates.map((gateName, gateIndex) => {
+        {Array.from(
+          [...settings.gates, ...dayTickets.map((t) => t.gateNumber || 'Gate 1')]
+            .reduce((map, rawGate) => {
+              const clean = String(rawGate || '').trim();
+              if (!clean) return map;
+              const key = clean.toUpperCase();
+              if (!map.has(key)) map.set(key, clean);
+              return map;
+            }, new Map<string, string>())
+            .values()
+        ).map((gateName, gateIndex) => {
           const normGate = gateName.trim().toUpperCase();
           const gateTickets = dayTickets.filter((t) => (t.gateNumber || '').trim().toUpperCase() === normGate);
           const currentLoading = gateTickets.find((t) => t.status === 'under_loading');

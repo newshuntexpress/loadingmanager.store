@@ -819,15 +819,15 @@
     },
     "/gate_tickets/{ticketId}": {
       "schema": { "$ref": "#/entities/GateTicketRecord" },
-      "description": "Plant-scoped gate queue tickets and nested loading slips synchronized in real time."
+      "description": "Gate queue tickets and nested loading slips synchronized in real time for signed-in users without role or plant save blockers."
     },
     "/gate_tickets/{ticketId}/private/{docId}": {
       "schema": { "$ref": "#/entities/GateTicketDriverPii" },
-      "description": "Isolated driver phone and Iqama PII for gate tickets."
+      "description": "Driver phone and Iqama details for gate tickets accessible to signed-in users."
     },
     "/materials/{materialId}": {
       "schema": { "$ref": "#/entities/MaterialMasterItem" },
-      "description": "Material Master catalog for loading slip pallet calculations."
+      "description": "Material Master catalog for loading slip pallet calculations accessible to signed-in users."
     },
     "/ex_factory_entries/{entryId}": {
       "schema": { "$ref": "#/entities/ExFactoryEntryRecord" },

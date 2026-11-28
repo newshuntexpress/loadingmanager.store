@@ -203,7 +203,7 @@ export const TicketTable: React.FC<TicketTableProps> = ({
                     )}
                     <p className="text-[11.5px] font-bold text-[#0A6ED1] mt-1">
                       {t.status === 'under_loading'
-                        ? 'In Progress'
+                        ? `Loading at ${t.gateNumber}`
                         : `Gate Pos: ${t.gateSequenceNumber}`}
                     </p>
                   </td>

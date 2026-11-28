@@ -418,9 +418,9 @@ export default function App() {
     !isSecurityGuardRole &&
     (isAdmin || hasPerm('tickets.view'));
   const canCreateTickets =
-    !isForkliftRole && !isLiquidStoreRole && !isExFactoryRole && !isSecurityGuardRole && hasPerm('tickets.create');
+    !isForkliftRole && !isLiquidStoreRole && !isExFactoryRole && !isSecurityGuardRole && Boolean(currentUser);
   const canUpdateTickets =
-    !isForkliftRole && !isLiquidStoreRole && !isExFactoryRole && !isSecurityGuardRole && hasPerm('tickets.update');
+    !isForkliftRole && !isLiquidStoreRole && !isExFactoryRole && !isSecurityGuardRole && Boolean(currentUser);
   const canOperateForklift =
     !isLiquidStoreRole &&
     !isExFactoryRole &&
@@ -618,7 +618,8 @@ export default function App() {
       userCanViewTickets ||
       userCanViewGuard ||
       userCanViewDispatch ||
-      userCanViewMaterialReg;
+      userCanViewMaterialReg ||
+      (!forkRole && !guardRole && !liquidRole && !exRole);
     const userCanFetchDrivers =
       !forkRole &&
       !guardRole &&

@@ -620,7 +620,7 @@ async function withFirestore404Fallback<T>(
     try {
       return await backendFn();
     } catch (err) {
-      if (err instanceof ApiError && err.status === 404 && auth.currentUser?.emailVerified) {
+      if (err instanceof ApiError && (err.status === 404 || err.status === 403) && auth.currentUser) {
         return await staticFn();
       }
       throw err;
@@ -1263,7 +1263,7 @@ export const ApiClient = {
   ): Promise<TicketRecord> {
     const fetchFromFirestoreOrCache = async (): Promise<TicketRecord> => {
       let remote: TicketRecord | null = null;
-      if (auth.currentUser?.emailVerified) {
+      if (auth.currentUser) {
         remote = await getGateTicketFromFirestore(id).catch(() => null);
       }
       const prev = StorageService.getTickets().find((t) => t.id === id);

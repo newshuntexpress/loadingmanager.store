@@ -16,7 +16,6 @@ import {
 import {
   auth,
   db,
-  DEFAULT_ADMIN_EMAIL,
   getDefaultPermissionsForRole,
   handleFirestoreError,
   OperationType,
@@ -292,7 +291,7 @@ export async function saveGateTicketToFirestore(
   options?: { createOnly?: boolean }
 ): Promise<void> {
   const user = auth.currentUser;
-  if (!user || !user.emailVerified) return;
+  if (!user) return;
 
   const uid = safeId(user.uid, 'usr');
   const ticketId = safeId(ticket.id, 'tk');
@@ -307,7 +306,6 @@ export async function saveGateTicketToFirestore(
 
     let currentOp = OperationType.GET;
     let ticketAlreadyExisted = false;
-    let ticketOwnerUid = uid;
 
     try {
       await runTransaction(db, async (tx) => {
@@ -329,13 +327,11 @@ export async function saveGateTicketToFirestore(
             updatedAt: serverTimestamp(),
           };
           tx.set(ticketRef, createPayload);
-          ticketOwnerUid = uid;
           ticketAlreadyExisted = false;
           return;
         }
 
         const existingTicketData = existingSnap.data();
-        ticketOwnerUid = clampStr(existingTicketData?.ownerUid || uid, 128);
         ticketAlreadyExisted = true;
         if (options?.createOnly) {
           return;
@@ -475,7 +471,7 @@ export async function saveGateTicketToFirestore(
           ...(iqamaNumber ? { iqamaNumber } : {}),
           updatedAt: serverTimestamp(),
         });
-      } else if (ticketOwnerUid === uid || user.email?.toLowerCase() === DEFAULT_ADMIN_EMAIL) {
+      } else {
         await setDoc(piiRef, {
           ticketId,
           ownerUid: uid,
@@ -486,14 +482,14 @@ export async function saveGateTicketToFirestore(
         });
       }
     } catch {
-      // Non-owner operators without PII access still save operational gate ticket create/update cleanly
+      // Non-blocking PII sync
     }
   });
 }
 
 export async function deleteGateTicketFromFirestore(ticketId: string): Promise<void> {
   const user = auth.currentUser;
-  if (!user || !user.emailVerified) return;
+  if (!user) return;
 
   const cleanId = safeId(ticketId, 'tk');
   return withDocLock(`gate_tickets/${cleanId}`, async () => {
@@ -563,7 +559,7 @@ function mapFirestoreDocToTicket(
 
 export async function getGateTicketFromFirestore(ticketId: string): Promise<TicketRecord | null> {
   const user = auth.currentUser;
-  if (!user || !user.emailVerified) return null;
+  if (!user) return null;
   const cleanId = safeId(ticketId, 'tk');
   try {
     let targetDocId = cleanId;
@@ -574,7 +570,6 @@ export async function getGateTicketFromFirestore(ticketId: string): Promise<Tick
     } else {
       const q = query(
         collection(db, 'gate_tickets'),
-        where('isSharedPlant', '==', true),
         where('id', '==', ticketId)
       );
       const qSnap = await getDocs(q);
@@ -603,9 +598,9 @@ export async function getGateTicketFromFirestore(ticketId: string): Promise<Tick
 
 export async function listGateTicketsFromFirestore(plantId?: string): Promise<TicketRecord[]> {
   const user = auth.currentUser;
-  if (!user || !user.emailVerified) return [];
+  if (!user) return [];
   try {
-    const q = query(collection(db, 'gate_tickets'), where('isSharedPlant', '==', true));
+    const q = query(collection(db, 'gate_tickets'));
     const snapshot = await getDocs(q);
     let rawRecords = snapshot.docs.map((docSnap) =>
       mapFirestoreDocToTicket(docSnap.id, docSnap.data() as Record<string, unknown>)
@@ -644,7 +639,7 @@ export function subscribeFirestoreTickets(
   fallbackDriverPiiById?: Map<string, { driverPhone?: string; iqamaNumber?: string }>,
   allowedPlants?: string[]
 ): Unsubscribe {
-  const q = query(collection(db, 'gate_tickets'), where('isSharedPlant', '==', true));
+  const q = query(collection(db, 'gate_tickets'));
   const piiCache = new Map<string, { driverPhone: string; iqamaNumber: string; updatedAtMs: number }>();
 
   return onSnapshot(
@@ -720,7 +715,7 @@ export async function saveMaterialToFirestore(
   options?: { createOnly?: boolean }
 ): Promise<void> {
   const user = auth.currentUser;
-  if (!user || !user.emailVerified) return;
+  if (!user) return;
 
   const uid = safeId(user.uid, 'usr');
   const materialId = safeId(material.id, 'mat');
@@ -776,7 +771,7 @@ export async function saveMaterialToFirestore(
 
 export async function deleteMaterialFromFirestore(materialId: string): Promise<void> {
   const user = auth.currentUser;
-  if (!user || !user.emailVerified) return;
+  if (!user) return;
 
   const cleanId = safeId(materialId, 'mat');
   return withDocLock(`materials/${cleanId}`, async () => {
@@ -800,7 +795,7 @@ export function subscribeFirestoreMaterials(
   onData: (materials: MaterialMasterRecord[]) => void,
   onError?: (err: Error) => void
 ): Unsubscribe {
-  const q = query(collection(db, 'materials'), where('isSharedPlant', '==', true));
+  const q = query(collection(db, 'materials'));
 
   return onSnapshot(
     q,
@@ -844,12 +839,10 @@ export async function syncMissingRecordsToFirestore(
   backendMaterials: MaterialMasterRecord[]
 ): Promise<void> {
   const user = auth.currentUser;
-  if (!user || !user.emailVerified) return;
+  if (!user) return;
 
   try {
-    const existingTicketsSnap = await getDocs(
-      query(collection(db, 'gate_tickets'), where('isSharedPlant', '==', true))
-    );
+    const existingTicketsSnap = await getDocs(collection(db, 'gate_tickets'));
     const existingTicketIds = new Set(existingTicketsSnap.docs.map((d) => d.id));
     for (const tk of backendTickets) {
       const id = safeId(tk.id, 'tk');
@@ -862,9 +855,7 @@ export async function syncMissingRecordsToFirestore(
   }
 
   try {
-    const existingMaterialsSnap = await getDocs(
-      query(collection(db, 'materials'), where('isSharedPlant', '==', true))
-    );
+    const existingMaterialsSnap = await getDocs(collection(db, 'materials'));
     const existingMaterialIds = new Set(existingMaterialsSnap.docs.map((d) => d.id));
     for (const mat of backendMaterials) {
       const id = safeId(mat.id, 'mat');
@@ -1028,9 +1019,9 @@ export async function getPlantSettingsFromFirestore(): Promise<CompanySettings |
 
 export async function listMaterialsFromFirestore(): Promise<MaterialMasterRecord[]> {
   const user = auth.currentUser;
-  if (!user || !user.emailVerified) return [];
+  if (!user) return [];
   try {
-    const q = query(collection(db, 'materials'), where('isSharedPlant', '==', true));
+    const q = query(collection(db, 'materials'));
     const snapshot = await getDocs(q);
     const list: MaterialMasterRecord[] = snapshot.docs.map((docSnap) => {
       const d = docSnap.data();

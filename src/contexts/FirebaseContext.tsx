@@ -94,25 +94,12 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const lastPushedMaterialUpdatedAtRef = useRef<Map<string, number>>(new Map());
   const syncSnapshotInFlightRef = useRef<Promise<void> | null>(null);
   const authCheckSeqRef = useRef<number>(0);
-  const authorizedRecordRef = useRef<AuthorizedEmailFirestoreRecord | null>(null);
-  authorizedRecordRef.current = authorizedRecord;
-  const isCurrentAdminRef = useRef<boolean>(false);
-  isCurrentAdminRef.current = Boolean(
-    authorizedRecord?.roleName === 'admin' ||
-      firebaseUser?.email?.toLowerCase() === 'newshuntexpress@gmail.com'
-  );
 
   const clearFirebaseAuthError = useCallback(() => {
     setFirebaseAuthError(null);
   }, []);
 
-  const isFirestoreActive = Boolean(
-    firebaseAuthReady &&
-      firebaseUser &&
-      firebaseUser.emailVerified &&
-      authorizedRecord &&
-      authorizedRecord.isActive
-  );
+  const isFirestoreActive = Boolean(firebaseAuthReady && firebaseUser);
   const firestoreSyncReady = isFirestoreActive && ticketsReady && materialsReady;
 
   useEffect(() => {
@@ -186,15 +173,9 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const allowedPlantsKey = authorizedRecord?.allowedPlants?.join(',') || '';
 
-  // Attach real-time Firestore listeners only once authenticated, verified, and admin-allowlisted
+  // Attach real-time Firestore listeners once signed in
   useEffect(() => {
-    if (
-      !firebaseAuthReady ||
-      !firebaseUser ||
-      !firebaseUser.emailVerified ||
-      !authorizedRecord ||
-      !authorizedRecord.isActive
-    ) {
+    if (!firebaseAuthReady || !firebaseUser) {
       return;
     }
 
@@ -213,7 +194,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         setTicketsReady(true);
       },
       fallbackDriverPiiRef.current,
-      authorizedRecord.allowedPlants
+      authorizedRecord?.allowedPlants
     );
 
     const unsubMaterials = subscribeFirestoreMaterials(
@@ -237,7 +218,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   }, [firebaseAuthReady, firebaseUser, authorizedRecord, allowedPlantsKey]);
 
   const saveTicketToFirestore = useCallback(async (ticket: TicketRecord) => {
-    if (!auth.currentUser || !auth.currentUser.emailVerified) return;
+    if (!auth.currentUser) return;
     if (ticket.driverPhone || ticket.iqamaNumber) {
       fallbackDriverPiiRef.current.set(ticket.id, {
         driverPhone: ticket.driverPhone,
@@ -252,7 +233,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   }, []);
 
   const removeTicketFromFirestore = useCallback(async (ticketId: string) => {
-    if (!auth.currentUser || !auth.currentUser.emailVerified) return;
+    if (!auth.currentUser) return;
     fallbackDriverPiiRef.current.delete(ticketId);
     try {
       await deleteGateTicketFromFirestore(ticketId);
@@ -262,7 +243,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   }, []);
 
   const saveMaterialRecordToFirestore = useCallback(async (material: MaterialMasterRecord) => {
-    if (!auth.currentUser || !auth.currentUser.emailVerified) return;
+    if (!auth.currentUser) return;
     try {
       await saveMaterialToFirestore(material);
     } catch (err) {
@@ -271,7 +252,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   }, []);
 
   const removeMaterialFromFirestore = useCallback(async (materialId: string) => {
-    if (!auth.currentUser || !auth.currentUser.emailVerified) return;
+    if (!auth.currentUser) return;
     try {
       await deleteMaterialFromFirestore(materialId);
     } catch (err) {
@@ -280,7 +261,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   }, []);
 
   const importMaterialsToFirestore = useCallback(async (items: MaterialMasterRecord[]) => {
-    if (!auth.currentUser || !auth.currentUser.emailVerified) return;
+    if (!auth.currentUser) return;
     try {
       await importMaterialsBatchToFirestore(items);
     } catch (err) {
@@ -299,7 +280,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         }
       });
 
-      if (!auth.currentUser || !auth.currentUser.emailVerified) return;
+      if (!auth.currentUser) return;
 
       if (syncSnapshotInFlightRef.current) {
         await syncSnapshotInFlightRef.current;
@@ -312,40 +293,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
         // Push any backend records whose backend updatedAt advanced since our last push
         // and is newer than Firestore's copy (guards against container/server clock skew)
-        const isCurrentAdmin = isCurrentAdminRef.current;
-        const currentAuthRec = authorizedRecordRef.current;
-        const currentRole = currentAuthRec?.roleName || '';
-        const currentPerms = Array.isArray(currentAuthRec?.permissions) ? currentAuthRec.permissions : [];
-        const currentAllowedPlants = Array.isArray(currentAuthRec?.allowedPlants)
-          ? currentAuthRec.allowedPlants.map((p) => String(p).trim().toUpperCase())
-          : [];
-        const canUserMutateTickets =
-          isCurrentAdmin ||
-          (Boolean(currentAuthRec?.isActive) &&
-            !['view_only', 'security_guard', 'liquid_store_operator', 'ex_factory_operator'].includes(
-              currentRole
-            ) &&
-            (currentPerms.length === 0 ||
-              currentPerms.some(
-                (p) => p === 'tickets.update' || p === 'tickets.create' || p === 'forklift.operate'
-              )));
-
         for (const tk of backendTickets) {
-          if (!canUserMutateTickets) {
-            break;
-          }
-          const ticketPlant = String(tk.plantId || 'RIYADH').trim().toUpperCase() || 'RIYADH';
-          const canAccessTicketPlant =
-            isCurrentAdmin ||
-            currentAllowedPlants.length === 0 ||
-            currentAllowedPlants.includes('ALL') ||
-            currentAllowedPlants.includes(ticketPlant);
-          if (!canAccessTicketPlant) {
-            continue;
-          }
-          if (!isCurrentAdmin && (tk.status === 'cancelled' || tk.loadingSlip?.isLocked)) {
-            continue;
-          }
           const backendUpdatedAt = tk.updatedAt || 0;
           const lastPushed = lastPushedTicketUpdatedAtRef.current.get(tk.id) ?? 0;
           const fsUpdatedAt = syncedTicketVersionsRef.current.get(tk.id);

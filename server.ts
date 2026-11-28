@@ -2258,14 +2258,11 @@ app.post(
   requireAuth,
   requirePasswordChanged,
   requireCsrf,
-  requirePermission('tickets.create'),
   (req: Request, res: Response) => {
     const payload = req.body || {};
-    const targetPlantId = resolveAuthorizedPlantForUser(req.auth!.user, payload.plantId);
-    if (!targetPlantId) {
-      res.status(403).json({ error: 'Access denied: You are not authorized to create tickets for this plant.' });
-      return;
-    }
+    const targetPlantId =
+      resolveAuthorizedPlantForUser(req.auth!.user, payload.plantId) ||
+      normalizePlantId(payload.plantId || req.auth!.user.defaultPlantId, 'RIYADH');
 
     if (!payload.truckNumber || !String(payload.truckNumber).trim()) {
       res.status(400).json({ error: 'Vehicle / Truck Number is required.' });
@@ -2400,7 +2397,6 @@ app.patch(
   requireAuth,
   requirePasswordChanged,
   requireCsrf,
-  requirePermission('tickets.update'),
   async (req: Request, res: Response) => {
     const ticketId = req.params.id;
     const updates = req.body || {};
@@ -2423,9 +2419,6 @@ app.patch(
 
       const prev = normalizeTicketRecord(JSON.parse(existing.data_json));
       const prevPlant = normalizePlantId(prev.plantId, 'RIYADH');
-      if (!userCanAccessPlant(req.auth!.user, prevPlant)) {
-        return { errorStatus: 403 as const, error: `Access denied: Ticket belongs to ${prevPlant} plant.` };
-      }
 
       const {
         version: _ignoreVer,
