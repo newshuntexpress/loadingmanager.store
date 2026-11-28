@@ -454,14 +454,7 @@ export default function App() {
     (isAdmin || canViewExFactory || canCreateExFactory || canUpdateExFactory || canDeleteExFactory);
   const canDeleteTickets =
     !isForkliftRole && !isLiquidStoreRole && !isExFactoryRole && !isSecurityGuardRole && hasPerm('tickets.delete');
-  const canPrintSlips =
-    !isLiquidStoreRole &&
-    !isSecurityGuardRole &&
-    (isAdmin ||
-      isForkliftRole ||
-      isExFactoryRole ||
-      currentUser?.roleName === 'view_only' ||
-      hasPerm('slips.print'));
+  const canPrintSlips = Boolean(currentUser);
   const canManageDrivers =
     !isForkliftRole && !isLiquidStoreRole && !isExFactoryRole && !isSecurityGuardRole && hasPerm('drivers.manage');
   const canViewReports =
@@ -3179,8 +3172,8 @@ export default function App() {
         />
       )}
 
-      {/* 3. 2-Copy A4 Loading Slip Print Preview Modal */}
-      {!isLiquidStoreOnly && !isSecurityGuardOnly && canPrintSlips && activeTicketForPrintSlip && (
+      {/* 3. 2-Copy A4 Loading Slip Print Preview Modal (accessible without slips.print permission) */}
+      {activeTicketForPrintSlip && (
         <LoadingSlipPrintView
           ticket={activeTicketForPrintSlip}
           settings={settings}
@@ -3196,7 +3189,7 @@ export default function App() {
       )}
 
       {/* 4. Compact Gate Token Print View */}
-      {!isForkliftOperator && !isLiquidStoreOnly && !isExFactoryOnly && !isSecurityGuardOnly && activeTicketForPrintTicket && (
+      {activeTicketForPrintTicket && (
         <TicketPrintView
           ticket={activeTicketForPrintTicket}
           settings={settings}

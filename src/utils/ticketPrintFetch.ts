@@ -84,6 +84,24 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      reject(new Error('Print refresh timeout'));
+    }, ms);
+    promise.then(
+      (val) => {
+        window.clearTimeout(timer);
+        resolve(val);
+      },
+      (err) => {
+        window.clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
+
 export interface FetchTicketForPrintParams {
   ticket?: TicketRecord;
   ticketId?: string;
@@ -99,10 +117,40 @@ export async function fetchTicketForPrintWithRetry({
 }: FetchTicketForPrintParams): Promise<TicketRecord> {
   const targetId = String(ticketId || ticket?.id || '').trim();
   if (!targetId) {
+    if (ticket) return ticket;
     throw new ApiError('Ticket record not found.', 404);
   }
 
   const isExFactory = ticket?.gateNumber === 'EX-FACTORY' || targetId.startsWith('exf_');
+
+  // When a local ticket object is already in memory (live view/creation/edit),
+  // perform a fast best-effort refresh to pick up any fresh token/fields,
+  // and immediately fall back to the local ticket on any 401/403/404/network error or timeout
+  // so printing is never blocked.
+  if (ticket) {
+    try {
+      const refreshed = await withTimeout(
+        isExFactory
+          ? ApiClient.getExFactoryEntryById(targetId, ticket.plantId).then((entry) =>
+              mergeExFactoryEntryIntoTicket(entry, ticket)
+            )
+          : ApiClient.getTicketById(targetId, { allowFirestoreFallback: true }).then((fetched) =>
+              mergeResolvedTicket(fetched, ticket)
+            ),
+        1200
+      );
+      if (isCancelled()) {
+        throw new Error('Cancelled');
+      }
+      return refreshed;
+    } catch {
+      if (isCancelled()) {
+        throw new Error('Cancelled');
+      }
+      return ticket;
+    }
+  }
+
   let lastError: unknown = null;
 
   for (let attempt = 0; attempt <= PRINT_FETCH_MAX_RETRIES; attempt += 1) {
@@ -112,14 +160,14 @@ export async function fetchTicketForPrintWithRetry({
 
     try {
       if (isExFactory) {
-        const entry = await ApiClient.getExFactoryEntryById(targetId, ticket?.plantId);
-        return mergeExFactoryEntryIntoTicket(entry, ticket);
+        const entry = await ApiClient.getExFactoryEntryById(targetId);
+        return mergeExFactoryEntryIntoTicket(entry);
       }
 
       const fetched = await ApiClient.getTicketById(targetId, {
         allowFirestoreFallback: attempt === PRINT_FETCH_MAX_RETRIES,
       });
-      return mergeResolvedTicket(fetched, ticket);
+      return fetched;
     } catch (err) {
       lastError = err;
       const shouldRetry = isTicketNotFoundError(err) && attempt < PRINT_FETCH_MAX_RETRIES;
@@ -129,10 +177,6 @@ export async function fetchTicketForPrintWithRetry({
         onRetryAttempt?.(attempt + 1, PRINT_FETCH_MAX_RETRIES, message);
         await sleep(PRINT_FETCH_RETRY_DELAYS_MS[attempt] || 800);
         continue;
-      }
-
-      if (ticket && isTransientNetworkError(err) && !isTicketNotFoundError(err)) {
-        return ticket;
       }
 
       throw err;

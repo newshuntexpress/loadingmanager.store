@@ -2198,14 +2198,6 @@ app.get(
   '/api/tickets/:id',
   requireAuth,
   requirePasswordChanged,
-  requireAnyPermission([
-    'tickets.view',
-    'slips.print',
-    'forklift.operate',
-    'dispatch.view',
-    'material_register.view',
-    'guard.view',
-  ]),
   (req: Request, res: Response) => {
     processAutoLoadingTransitions();
 
@@ -2241,10 +2233,6 @@ app.get(
 
     const parsed = JSON.parse(row.data_json);
     const plantId = normalizePlantId(parsed.plantId || row.plant_id, 'RIYADH');
-    if (!userCanAccessPlant(req.auth!.user, plantId)) {
-      res.status(403).json({ error: `Access denied: Ticket belongs to ${plantId} plant.` });
-      return;
-    }
 
     let driverStatusToken = row.driver_status_token || undefined;
     if (!driverStatusToken && parsed.loadingSlip) {

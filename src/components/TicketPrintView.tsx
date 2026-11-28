@@ -128,12 +128,15 @@ export const TicketPrintView: React.FC<TicketPrintViewProps> = ({
 
     setTimeout(() => {
       window.removeEventListener('beforeprint', onBeforePrint);
-      if (!printDialogOpened) {
+      const isPrintMediaActive = Boolean(
+        typeof window.matchMedia === 'function' && window.matchMedia('print')?.matches
+      );
+      if (!printDialogOpened && !isPrintMediaActive) {
         generateGateTokenPDF(resolvedTicket, plantSettings);
         setPdfNotice('Gate Token PDF downloaded (preview frame restricts browser print popup).');
         setTimeout(() => setPdfNotice(null), 5000);
       }
-    }, 250);
+    }, 450);
   }, [resolvedTicket, plantSettings]);
 
   useEffect(() => {

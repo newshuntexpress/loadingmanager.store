@@ -103,6 +103,22 @@ function rejectRestrictedOperators(req: Request, res: Response, next: NextFuncti
 
 export const exFactoryRouter = express.Router();
 
+exFactoryRouter.get('/:id', requireAuth, requirePasswordChanged, (req: Request, res: Response) => {
+  const entryId = String(req.params.id || '').trim();
+  if (!entryId) {
+    res.status(400).json({ error: 'Entry ID is required.' });
+    return;
+  }
+  const row = db
+    .prepare(`SELECT * FROM ex_factory_entries WHERE id = ?`)
+    .get(entryId) as DbExFactoryRow | undefined;
+  if (!row) {
+    res.status(404).json({ error: 'Ticket record not found.' });
+    return;
+  }
+  res.json({ entry: mapRow(row) });
+});
+
 exFactoryRouter.use(
   requireAuth,
   requirePasswordChanged,

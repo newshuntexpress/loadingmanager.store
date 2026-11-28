@@ -1262,24 +1262,31 @@ export const ApiClient = {
     id: string,
     options?: { allowFirestoreFallback?: boolean }
   ): Promise<TicketRecord> {
-    const fetchFromFirestore = async (): Promise<TicketRecord> => {
-      const remote = await getGateTicketFromFirestore(id);
-      if (!remote) {
+    const fetchFromFirestoreOrCache = async (): Promise<TicketRecord> => {
+      let remote: TicketRecord | null = null;
+      if (auth.currentUser?.emailVerified) {
+        remote = await getGateTicketFromFirestore(id).catch(() => null);
+      }
+      const prev = StorageService.getTickets().find((t) => t.id === id);
+      if (!remote && !prev) {
         throw new ApiError('Ticket record not found.', 404);
       }
-      const prev = StorageService.getTickets().find((t) => t.id === remote.id);
+      if (!remote && prev) {
+        return prev;
+      }
+      const resolved = remote as TicketRecord;
       const merged: TicketRecord = {
-        ...remote,
-        driverPhone: remote.driverPhone || prev?.driverPhone || '',
-        iqamaNumber: remote.iqamaNumber || prev?.iqamaNumber || '',
-        driverStatusToken: remote.driverStatusToken || prev?.driverStatusToken,
+        ...resolved,
+        driverPhone: resolved.driverPhone || prev?.driverPhone || '',
+        iqamaNumber: resolved.iqamaNumber || prev?.iqamaNumber || '',
+        driverStatusToken: resolved.driverStatusToken || prev?.driverStatusToken,
       };
       upsertStaticTicketCache(merged);
       return merged;
     };
 
     if (staticFirebaseOnlyMode) {
-      return fetchFromFirestore();
+      return fetchFromFirestoreOrCache();
     }
 
     try {
@@ -1291,15 +1298,14 @@ export const ApiClient = {
     } catch (err) {
       if (isStaticNoBackendError(err)) {
         staticFirebaseOnlyMode = true;
-        return fetchFromFirestore();
+        return fetchFromFirestoreOrCache();
       }
       if (
         options?.allowFirestoreFallback &&
         err instanceof ApiError &&
-        err.status === 404 &&
-        auth.currentUser?.emailVerified
+        (err.status === 404 || err.status === 403 || err.status === 401)
       ) {
-        return fetchFromFirestore();
+        return fetchFromFirestoreOrCache();
       }
       throw err;
     }
@@ -2222,12 +2228,43 @@ export const ApiClient = {
   },
 
   async getExFactoryEntryById(id: string, plantId?: string): Promise<ExFactoryEntry> {
-    const entries = await this.getExFactoryEntries(plantId);
-    const matched = entries.find((entry) => entry.id === id);
-    if (!matched) {
-      throw new ApiError('Ticket record not found.', 404);
+    const lookupFromFirestoreOrCache = async (): Promise<ExFactoryEntry> => {
+      const cachedHit = cacheStaticExFactory.find((entry) => entry.id === id);
+      if (cachedHit) return cachedHit;
+      const entries = await listExFactoryEntriesFromFirestore(plantId).catch(() => [] as ExFactoryEntry[]);
+      if (entries.length > 0) {
+        cacheStaticExFactory = entries;
+      }
+      const matched = entries.find((entry) => entry.id === id);
+      if (!matched) {
+        throw new ApiError('Ticket record not found.', 404);
+      }
+      return matched;
+    };
+
+    if (staticFirebaseOnlyMode) {
+      return lookupFromFirestoreOrCache();
     }
-    return matched;
+
+    try {
+      const res = await request<{ entry: ExFactoryEntry }>(
+        `/api/ex-factory/${encodeURIComponent(id)}`
+      );
+      if (res?.entry) {
+        return res.entry;
+      }
+      throw new ApiError('Ticket record not found.', 404);
+    } catch (err) {
+      if (isStaticNoBackendError(err)) {
+        staticFirebaseOnlyMode = true;
+        return lookupFromFirestoreOrCache();
+      }
+      try {
+        return await lookupFromFirestoreOrCache();
+      } catch {
+        throw err;
+      }
+    }
   },
 
   async createExFactoryEntry(payload: {
