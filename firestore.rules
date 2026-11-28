@@ -844,8 +844,7 @@ service cloud.firestore {
           isValidTicketDriverPii(incoming(), ticketId) &&
           incoming().ownerUid == request.auth.uid &&
           incoming().createdAt == request.time &&
-          incoming().updatedAt == request.time &&
-          existsAfter(/databases/$(database)/documents/gate_tickets/$(ticketId));
+          incoming().updatedAt == request.time;
 
         allow update: if isActiveAllowlisted() &&
           isValidId(ticketId) &&
